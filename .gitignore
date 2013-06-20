@@ -106,3 +106,4 @@ cscope.*
 tags
 TAGS
 *~
+bin/
