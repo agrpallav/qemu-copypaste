@@ -45,6 +45,7 @@
 
 #ifndef _WIN32
 #define QGA_VIRTIO_PATH_DEFAULT "/dev/virtio-ports/org.qemu.guest_agent.0"
+#define QGA_SESSION_CLIENT_PATH_DEFAULT "/tmp/sproc.sock"
 #define QGA_STATE_RELATIVE_DIR  "run"
 #else
 #define QGA_VIRTIO_PATH_DEFAULT "\\\\.\\Global\\org.qemu.guest_agent.0"
@@ -69,6 +70,7 @@ struct GAState {
     JSONMessageParser parser;
     GMainLoop *main_loop;
     GAChannel *channel;
+    GAChannel *channel_session;
     bool virtio; /* fastpath to check for virtio to deal with poll() quirks */
     GACommandState *command_state;
     GLogLevelFlags log_level;
@@ -185,10 +187,17 @@ static void usage(const char *cmd)
 "Usage: %s [-m <method> -p <path>] [<options>]\n"
 "QEMU Guest Agent %s\n"
 "\n"
-"  -m, --method      transport method: one of unix-listen, virtio-serial, or\n"
+"  -m, --method      transport method(for host channel): one of unix-listen, virtio-serial, or\n"
 "                    isa-serial (virtio-serial is the default)\n"
+
+"  --sclientmethod   transport method(for session_client channels): one of unix-listen, virtio-serial, or\n"
+"                    isa-serial (unix-listen is the default)\n"
+
 "  -p, --path        device/socket path (the default for virtio-serial is:\n"
 "                    %s)\n"
+"  --clientpath      device/socket path for session-client (the default for unix-listen is:\n"
+"                    %s)\n"
+
 "  -l, --logfile     set logfile path, logs to stderr by default\n"
 "  -f, --pidfile     specify pidfile (default is %s)\n"
 #ifdef CONFIG_FSFREEZE
@@ -214,7 +223,7 @@ static void usage(const char *cmd)
 "  -h, --help        display this help and exit\n"
 "\n"
 "Report bugs to <mdroth@linux.vnet.ibm.com>\n"
-    , cmd, QEMU_VERSION, QGA_VIRTIO_PATH_DEFAULT, dfl_pathnames.pidfile,
+, cmd, QEMU_VERSION, QGA_VIRTIO_PATH_DEFAULT, QGA_SESSION_CLIENT_PATH_DEFAULT, dfl_pathnames.pidfile,
 #ifdef CONFIG_FSFREEZE
     QGA_FSFREEZE_HOOK_DEFAULT,
 #endif
@@ -662,6 +671,37 @@ static gboolean channel_event_cb(GIOCondition condition, gpointer data)
     return true;
 }
 
+
+static gboolean channel_event_cb_session(GIOCondition condition, gpointer data)
+{
+    GAState *s = data;
+    gchar buf[QGA_READ_COUNT_DEFAULT+1];
+    gsize count;
+    GError *err = NULL;
+    GIOStatus status = ga_channel_read(s->channel_session, buf,QGA_READ_COUNT_DEFAULT+1, &count);
+    if (err != NULL) {
+        g_warning("error reading channel: %s", err->message);
+        g_error_free(err);
+        return false;
+    }
+    switch (status) {
+    case G_IO_STATUS_ERROR:
+        g_warning("error reading channel");
+        return false;
+    case G_IO_STATUS_NORMAL:
+        buf[count] = 0;
+        g_debug("read data, count: %d, data: %s", (int)count, buf);
+        break;
+    case G_IO_STATUS_EOF:
+        g_debug("received EOF");
+        return false;
+    default:
+        g_warning("unknown channel read status, closing");
+        return false;
+    }
+    return true;
+}
+
 static gboolean channel_init(GAState *s, const gchar *method, const gchar *path)
 {
     GAChannelMethod channel_method;
@@ -690,7 +730,6 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path)
         g_critical("unsupported channel method/type: %s", method);
         return false;
     }
-
     s->channel = ga_channel_new(channel_method, path, channel_event_cb, s);
     if (!s->channel) {
         g_critical("failed to create guest agent channel");
@@ -699,6 +738,46 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path)
 
     return true;
 }
+
+static gboolean channel_init_session(GAState *s, const gchar *method, const gchar *path)
+{
+    GAChannelMethod channel_method;
+
+    if (method == NULL) {
+        method = "unix-listen";
+    }
+
+    if (path == NULL) {
+        if (strcmp(method, "unix-listen") != 0) {
+            g_critical("must specify a path for this channel");
+            return false;
+        }
+        /* try the default path for the unix-listen port */
+        path = QGA_SESSION_CLIENT_PATH_DEFAULT;
+    }
+
+    if (strcmp(method, "virtio-serial") == 0) {
+        s->virtio = true; /* virtio requires special handling in some cases */
+        channel_method = GA_CHANNEL_VIRTIO_SERIAL;
+    } else if (strcmp(method, "isa-serial") == 0) {
+        channel_method = GA_CHANNEL_ISA_SERIAL;
+    } else if (strcmp(method, "unix-listen") == 0) {
+        channel_method = GA_CHANNEL_UNIX_LISTEN;
+    } else {
+        g_critical("unsupported channel method/type: %s", method);
+        return false;
+    }
+
+    s->channel_session = ga_channel_new(channel_method, path, channel_event_cb_session, s);
+    if (!s->channel_session) {
+        g_critical("failed to create guest agent channel for sessions");
+        return false;
+    }
+
+    return true;
+}
+
+
 
 #ifdef _WIN32
 DWORD WINAPI service_ctrl_handler(DWORD ctrl, DWORD type, LPVOID data,
@@ -923,6 +1002,7 @@ int main(int argc, char **argv)
 {
     const char *sopt = "hVvdm:p:l:f:F::b:s:t:";
     const char *method = NULL, *path = NULL;
+    const char *client_method = NULL, *client_path = NULL;
     const char *log_filepath = NULL;
     const char *pid_filepath;
 #ifdef CONFIG_FSFREEZE
@@ -942,7 +1022,9 @@ int main(int argc, char **argv)
 #endif
         { "verbose", 0, NULL, 'v' },
         { "method", 1, NULL, 'm' },
+        { "clientmethod", 1, NULL, 'C' },
         { "path", 1, NULL, 'p' },
+        { "clientpath", 1, NULL, 'c' },
         { "daemonize", 0, NULL, 'd' },
         { "blacklist", 1, NULL, 'b' },
 #ifdef _WIN32
@@ -967,8 +1049,14 @@ int main(int argc, char **argv)
         case 'm':
             method = optarg;
             break;
+        case 'C':
+            client_method = optarg;
+            break;
         case 'p':
             path = optarg;
+            break;
+        case 'c':
+            client_path=optarg;
             break;
         case 'l':
             log_filepath = optarg;
@@ -1167,6 +1255,11 @@ int main(int argc, char **argv)
         g_critical("failed to initialize guest agent channel");
         goto out_bad;
     }
+    if (!channel_init_session(ga_state, client_method, client_path)) {
+        g_critical("failed to init the temp socket");
+        goto out_bad;
+    }
+
 #ifndef _WIN32
     g_main_loop_run(ga_state->main_loop);
 #else
