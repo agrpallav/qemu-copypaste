@@ -391,7 +391,7 @@
 #
 # Since: 1.4
 ##
-{ 'enum': 'DataFormat'
+{ 'enum': 'DataFormat',
   'data': [ 'utf8', 'base64' ] }
 
 ##
@@ -513,12 +513,15 @@
 # @dirty-pages-rate: number of pages dirtied by second by the
 #        guest (since 1.3)
 #
+# @mbps: throughput in megabits/sec. (since 1.6)
+#
 # Since: 0.14.0
 ##
 { 'type': 'MigrationStats',
   'data': {'transferred': 'int', 'remaining': 'int', 'total': 'int' ,
            'duplicate': 'int', 'skipped': 'int', 'normal': 'int',
-           'normal-bytes': 'int', 'dirty-pages-rate' : 'int' } }
+           'normal-bytes': 'int', 'dirty-pages-rate' : 'int',
+           'mbps' : 'number' } }
 
 ##
 # @XBZRLECacheStats
@@ -605,10 +608,15 @@
 #          This feature allows us to minimize migration traffic for certain work
 #          loads, by sending compressed difference of the pages
 #
+# @x-rdma-pin-all: Controls whether or not the entire VM memory footprint is
+#          mlock()'d on demand or all at once. Refer to docs/rdma.txt for usage.
+#          Disabled by default. Experimental: may (or may not) be renamed after
+#          further testing is complete. (since 1.6)
+#
 # Since: 1.2
 ##
 { 'enum': 'MigrationCapability',
-  'data': ['xbzrle'] }
+  'data': ['xbzrle', 'x-rdma-pin-all'] }
 
 ##
 # @MigrationCapabilityStatus
@@ -1595,7 +1603,7 @@
 #
 # Since: 1.1
 ##
-{ 'enum': 'NewImageMode'
+{ 'enum': 'NewImageMode',
   'data': [ 'existing', 'absolute-paths' ] }
 
 ##
@@ -1615,6 +1623,53 @@
             '*mode': 'NewImageMode' } }
 
 ##
+# @DriveBackup
+#
+# @device: the name of the device which should be copied.
+#
+# @target: the target of the new image. If the file exists, or if it
+#          is a device, the existing file/device will be used as the new
+#          destination.  If it does not exist, a new file will be created.
+#
+# @format: #optional the format of the new destination, default is to
+#          probe if @mode is 'existing', else the format of the source
+#
+# @mode: #optional whether and how QEMU should create a new image, default is
+#        'absolute-paths'.
+#
+# @speed: #optional the maximum speed, in bytes per second
+#
+# @on-source-error: #optional the action to take on an error on the source,
+#                   default 'report'.  'stop' and 'enospc' can only be used
+#                   if the block device supports io-status (see BlockInfo).
+#
+# @on-target-error: #optional the action to take on an error on the target,
+#                   default 'report' (no limitations, since this applies to
+#                   a different block device than @device).
+#
+# Note that @on-source-error and @on-target-error only affect background I/O.
+# If an error occurs during a guest write request, the device's rerror/werror
+# actions will be used.
+#
+# Since: 1.6
+##
+{ 'type': 'DriveBackup',
+  'data': { 'device': 'str', 'target': 'str', '*format': 'str',
+            '*mode': 'NewImageMode', '*speed': 'int',
+            '*on-source-error': 'BlockdevOnError',
+            '*on-target-error': 'BlockdevOnError' } }
+
+##
+# @Abort
+#
+# This action can be used to test transaction failure.
+#
+# Since: 1.6
+###
+{ 'type': 'Abort',
+  'data': { } }
+
+##
 # @TransactionAction
 #
 # A discriminated record of operations that can be performed with
@@ -1622,7 +1677,9 @@
 ##
 { 'union': 'TransactionAction',
   'data': {
-       'blockdev-snapshot-sync': 'BlockdevSnapshot'
+       'blockdev-snapshot-sync': 'BlockdevSnapshot',
+       'drive-backup': 'DriveBackup',
+       'abort': 'Abort'
    } }
 
 ##
@@ -1734,6 +1791,52 @@
 { 'command': 'block-commit',
   'data': { 'device': 'str', '*base': 'str', 'top': 'str',
             '*speed': 'int' } }
+
+##
+# @drive-backup
+#
+# Start a point-in-time copy of a block device to a new destination.  The
+# status of ongoing drive-backup operations can be checked with
+# query-block-jobs where the BlockJobInfo.type field has the value 'backup'.
+# The operation can be stopped before it has completed using the
+# block-job-cancel command.
+#
+# @device: the name of the device which should be copied.
+#
+# @target: the target of the new image. If the file exists, or if it
+#          is a device, the existing file/device will be used as the new
+#          destination.  If it does not exist, a new file will be created.
+#
+# @format: #optional the format of the new destination, default is to
+#          probe if @mode is 'existing', else the format of the source
+#
+# @mode: #optional whether and how QEMU should create a new image, default is
+#        'absolute-paths'.
+#
+# @speed: #optional the maximum speed, in bytes per second
+#
+# @on-source-error: #optional the action to take on an error on the source,
+#                   default 'report'.  'stop' and 'enospc' can only be used
+#                   if the block device supports io-status (see BlockInfo).
+#
+# @on-target-error: #optional the action to take on an error on the target,
+#                   default 'report' (no limitations, since this applies to
+#                   a different block device than @device).
+#
+# Note that @on-source-error and @on-target-error only affect background I/O.
+# If an error occurs during a guest write request, the device's rerror/werror
+# actions will be used.
+#
+# Returns: nothing on success
+#          If @device is not a valid block device, DeviceNotFound
+#
+# Since 1.6
+##
+{ 'command': 'drive-backup',
+  'data': { 'device': 'str', 'target': 'str', '*format': 'str',
+            '*mode': 'NewImageMode', '*speed': 'int',
+            '*on-source-error': 'BlockdevOnError',
+            '*on-target-error': 'BlockdevOnError' } }
 
 ##
 # @drive-mirror
@@ -3185,10 +3288,11 @@
 # @addr: socket address to listen on (server=true)
 #        or connect to (server=false)
 # @server: #optional create server socket (default: true)
-# @wait: #optional wait for connect (not used for server
-#        sockets, default: false)
+# @wait: #optional wait for incoming connection on server
+#        sockets (default: false).
 # @nodelay: #optional set TCP_NODELAY socket option (default: false)
-# @telnet: #optional enable telnet protocol (default: false)
+# @telnet: #optional enable telnet protocol on server
+#          sockets (default: false)
 #
 # Since: 1.4
 ##

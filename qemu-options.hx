@@ -73,7 +73,7 @@ Select CPU model (@code{-cpu help} for list and additional feature selection)
 ETEXI
 
 DEF("smp", HAS_ARG, QEMU_OPTION_smp,
-    "-smp n[,maxcpus=cpus][,cores=cores][,threads=threads][,sockets=sockets]\n"
+    "-smp [cpus=]n[,maxcpus=cpus][,cores=cores][,threads=threads][,sockets=sockets]\n"
     "                set the number of CPUs to 'n' [default=1]\n"
     "                maxcpus= maximum number of total cpus, including\n"
     "                offline CPUs for hotplug, etc\n"
@@ -82,7 +82,7 @@ DEF("smp", HAS_ARG, QEMU_OPTION_smp,
     "                sockets= number of discrete sockets in the system\n",
         QEMU_ARCH_ALL)
 STEXI
-@item -smp @var{n}[,cores=@var{cores}][,threads=@var{threads}][,sockets=@var{sockets}][,maxcpus=@var{maxcpus}]
+@item -smp [cpus=]@var{n}[,cores=@var{cores}][,threads=@var{threads}][,sockets=@var{sockets}][,maxcpus=@var{maxcpus}]
 @findex -smp
 Simulate an SMP system with @var{n} CPUs. On the PC target, up to 255
 CPUs are supported. On Sparc32 target, Linux limits the number of usable CPUs
@@ -917,8 +917,8 @@ DEF("spice", HAS_ARG, QEMU_OPTION_spice,
     "       [,jpeg-wan-compression=[auto|never|always]]\n"
     "       [,zlib-glz-wan-compression=[auto|never|always]]\n"
     "       [,streaming-video=[off|all|filter]][,disable-copy-paste]\n"
-    "       [,agent-mouse=[on|off]][,playback-compression=[on|off]]\n"
-    "       [,seamless-migration=[on|off]]\n"
+    "       [,disable-agent-file-xfer][,agent-mouse=[on|off]]\n"
+    "       [,playback-compression=[on|off]][,seamless-migration=[on|off]]\n"
     "   enable spice\n"
     "   at least one of {port, tls-port} is mandatory\n",
     QEMU_ARCH_ALL)
@@ -960,6 +960,9 @@ Allow client connects without authentication.
 
 @item disable-copy-paste
 Disable copy paste between the client and the guest.
+
+@item disable-agent-file-xfer
+Disable spice-vdagent based file-xfer between the client and the guest.
 
 @item tls-port=<nr>
 Set the TCP port spice is listening on for encrypted channels.
@@ -2539,9 +2542,9 @@ Like -monitor but opens in 'control' mode.
 ETEXI
 
 DEF("mon", HAS_ARG, QEMU_OPTION_mon, \
-    "-mon chardev=[name][,mode=readline|control][,default]\n", QEMU_ARCH_ALL)
+    "-mon [chardev=]name[,mode=readline|control][,default]\n", QEMU_ARCH_ALL)
 STEXI
-@item -mon chardev=[name][,mode=readline|control][,default]
+@item -mon [chardev=]name[,mode=readline|control][,default]
 @findex -mon
 Setup monitor on chardev @var{name}.
 ETEXI

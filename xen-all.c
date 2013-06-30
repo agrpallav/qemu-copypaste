@@ -161,18 +161,18 @@ static void xen_ram_init(ram_addr_t ram_size)
     ram_addr_t block_len;
 
     block_len = ram_size;
-    if (ram_size >= QEMU_BELOW_4G_RAM_END) {
+    if (ram_size >= HVM_BELOW_4G_RAM_END) {
         /* Xen does not allocate the memory continuously, and keep a hole at
-         * QEMU_BELOW_4G_RAM_END of QEMU_BELOW_4G_MMIO_LENGTH
+         * HVM_BELOW_4G_MMIO_START of HVM_BELOW_4G_MMIO_LENGTH
          */
-        block_len += QEMU_BELOW_4G_MMIO_LENGTH;
+        block_len += HVM_BELOW_4G_MMIO_LENGTH;
     }
     memory_region_init_ram(&ram_memory, "xen.ram", block_len);
     vmstate_register_ram_global(&ram_memory);
 
-    if (ram_size >= QEMU_BELOW_4G_RAM_END) {
-        above_4g_mem_size = ram_size - QEMU_BELOW_4G_RAM_END;
-        below_4g_mem_size = QEMU_BELOW_4G_RAM_END;
+    if (ram_size >= HVM_BELOW_4G_RAM_END) {
+        above_4g_mem_size = ram_size - HVM_BELOW_4G_RAM_END;
+        below_4g_mem_size = HVM_BELOW_4G_RAM_END;
     } else {
         below_4g_mem_size = ram_size;
     }
@@ -418,7 +418,7 @@ static void xen_set_memory(struct MemoryListener *listener,
 {
     XenIOState *state = container_of(listener, XenIOState, memory_listener);
     hwaddr start_addr = section->offset_within_address_space;
-    ram_addr_t size = section->size;
+    ram_addr_t size = int128_get64(section->size);
     bool log_dirty = memory_region_is_logging(section->mr);
     hvmmem_type_t mem_type;
 
@@ -522,7 +522,7 @@ static void xen_log_start(MemoryListener *listener,
     XenIOState *state = container_of(listener, XenIOState, memory_listener);
 
     xen_sync_dirty_bitmap(state, section->offset_within_address_space,
-                          section->size);
+                          int128_get64(section->size));
 }
 
 static void xen_log_stop(MemoryListener *listener, MemoryRegionSection *section)
@@ -539,7 +539,7 @@ static void xen_log_sync(MemoryListener *listener, MemoryRegionSection *section)
     XenIOState *state = container_of(listener, XenIOState, memory_listener);
 
     xen_sync_dirty_bitmap(state, section->offset_within_address_space,
-                          section->size);
+                          int128_get64(section->size));
 }
 
 static void xen_log_global_start(MemoryListener *listener)

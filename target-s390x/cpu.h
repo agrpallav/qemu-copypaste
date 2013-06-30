@@ -34,10 +34,7 @@
 #include "exec/cpu-defs.h"
 #define TARGET_PAGE_BITS 12
 
-/* Actually 64-bits, limited by the memory API to 62 bits.  We
- * never use that much.
- */
-#define TARGET_PHYS_ADDR_SPACE_BITS 62
+#define TARGET_PHYS_ADDR_SPACE_BITS 64
 #define TARGET_VIRT_ADDR_SPACE_BITS 64
 
 #include "exec/cpu-all.h"
@@ -1084,6 +1081,7 @@ void kvm_s390_io_interrupt(S390CPU *cpu, uint16_t subchannel_id,
 void kvm_s390_crw_mchk(S390CPU *cpu);
 void kvm_s390_enable_css_support(S390CPU *cpu);
 int kvm_s390_get_registers_partial(CPUState *cpu);
+int kvm_s390_assign_subch_ioeventfd(int fd, uint32_t sch, int vq, bool assign);
 #else
 static inline void kvm_s390_io_interrupt(S390CPU *cpu,
                                         uint16_t subchannel_id,
@@ -1099,6 +1097,11 @@ static inline void kvm_s390_enable_css_support(S390CPU *cpu)
 {
 }
 static inline int kvm_s390_get_registers_partial(CPUState *cpu)
+{
+    return -ENOSYS;
+}
+static inline int kvm_s390_assign_subch_ioeventfd(int fd, uint32_t sch, int vq,
+                                                  bool assign)
 {
     return -ENOSYS;
 }
@@ -1125,6 +1128,16 @@ static inline void s390_crw_mchk(S390CPU *cpu)
         kvm_s390_crw_mchk(cpu);
     } else {
         cpu_inject_crw_mchk(cpu);
+    }
+}
+
+static inline int s390_assign_subch_ioeventfd(int fd, uint32_t sch_id, int vq,
+                                              bool assign)
+{
+    if (kvm_enabled()) {
+        return kvm_s390_assign_subch_ioeventfd(fd, sch_id, vq, assign);
+    } else {
+        return -ENOSYS;
     }
 }
 

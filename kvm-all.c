@@ -329,7 +329,7 @@ static void kvm_log_start(MemoryListener *listener,
     int r;
 
     r = kvm_dirty_pages_log_change(section->offset_within_address_space,
-                                   section->size, true);
+                                   int128_get64(section->size), true);
     if (r < 0) {
         abort();
     }
@@ -341,7 +341,7 @@ static void kvm_log_stop(MemoryListener *listener,
     int r;
 
     r = kvm_dirty_pages_log_change(section->offset_within_address_space,
-                                   section->size, false);
+                                   int128_get64(section->size), false);
     if (r < 0) {
         abort();
     }
@@ -379,7 +379,8 @@ static int kvm_get_dirty_pages_log_range(MemoryRegionSection *section,
     unsigned int i, j;
     unsigned long page_number, c;
     hwaddr addr, addr1;
-    unsigned int len = ((section->size / getpagesize()) + HOST_LONG_BITS - 1) / HOST_LONG_BITS;
+    unsigned int pages = int128_get64(section->size) / getpagesize();
+    unsigned int len = (pages + HOST_LONG_BITS - 1) / HOST_LONG_BITS;
     unsigned long hpratio = getpagesize() / TARGET_PAGE_SIZE;
 
     /*
@@ -422,7 +423,7 @@ static int kvm_physical_sync_dirty_bitmap(MemoryRegionSection *section)
     KVMSlot *mem;
     int ret = 0;
     hwaddr start_addr = section->offset_within_address_space;
-    hwaddr end_addr = start_addr + section->size;
+    hwaddr end_addr = start_addr + int128_get64(section->size);
 
     d.dirty_bitmap = NULL;
     while (start_addr < end_addr) {
@@ -634,7 +635,7 @@ static void kvm_set_phys_mem(MemoryRegionSection *section, bool add)
     bool writeable = !mr->readonly && !mr->rom_device;
     bool readonly_flag = mr->readonly || memory_region_is_romd(mr);
     hwaddr start_addr = section->offset_within_address_space;
-    ram_addr_t size = section->size;
+    ram_addr_t size = int128_get64(section->size);
     void *ram = NULL;
     unsigned delta;
 
@@ -832,7 +833,8 @@ static void kvm_mem_ioeventfd_add(MemoryListener *listener,
     int r;
 
     r = kvm_set_ioeventfd_mmio(fd, section->offset_within_address_space,
-                               data, true, section->size, match_data);
+                               data, true, int128_get64(section->size),
+                               match_data);
     if (r < 0) {
         abort();
     }
@@ -847,7 +849,8 @@ static void kvm_mem_ioeventfd_del(MemoryListener *listener,
     int r;
 
     r = kvm_set_ioeventfd_mmio(fd, section->offset_within_address_space,
-                               data, false, section->size, match_data);
+                               data, false, int128_get64(section->size),
+                               match_data);
     if (r < 0) {
         abort();
     }
@@ -862,7 +865,8 @@ static void kvm_io_ioeventfd_add(MemoryListener *listener,
     int r;
 
     r = kvm_set_ioeventfd_pio(fd, section->offset_within_address_space,
-                              data, true, section->size, match_data);
+                              data, true, int128_get64(section->size),
+                              match_data);
     if (r < 0) {
         abort();
     }
@@ -878,7 +882,8 @@ static void kvm_io_ioeventfd_del(MemoryListener *listener,
     int r;
 
     r = kvm_set_ioeventfd_pio(fd, section->offset_within_address_space,
-                              data, false, section->size, match_data);
+                              data, false, int128_get64(section->size),
+                              match_data);
     if (r < 0) {
         abort();
     }
@@ -1520,10 +1525,8 @@ static void kvm_handle_io(uint16_t port, void *data, int direction, int size,
     }
 }
 
-static int kvm_handle_internal_error(CPUArchState *env, struct kvm_run *run)
+static int kvm_handle_internal_error(CPUState *cpu, struct kvm_run *run)
 {
-    CPUState *cpu = ENV_GET_CPU(env);
-
     fprintf(stderr, "KVM internal error.");
     if (kvm_check_extension(kvm_state, KVM_CAP_INTERNAL_ERROR_DATA)) {
         int i;
@@ -1539,7 +1542,7 @@ static int kvm_handle_internal_error(CPUArchState *env, struct kvm_run *run)
     if (run->internal.suberror == KVM_INTERNAL_ERROR_EMULATION) {
         fprintf(stderr, "emulation failure\n");
         if (!kvm_arch_stop_on_emulation_error(cpu)) {
-            cpu_dump_state(env, stderr, fprintf, CPU_DUMP_CODE);
+            cpu_dump_state(cpu, stderr, fprintf, CPU_DUMP_CODE);
             return EXCP_INTERRUPT;
         }
     }
@@ -1585,10 +1588,8 @@ static void do_kvm_cpu_synchronize_state(void *arg)
     }
 }
 
-void kvm_cpu_synchronize_state(CPUArchState *env)
+void kvm_cpu_synchronize_state(CPUState *cpu)
 {
-    CPUState *cpu = ENV_GET_CPU(env);
-
     if (!cpu->kvm_vcpu_dirty) {
         run_on_cpu(cpu, do_kvm_cpu_synchronize_state, cpu);
     }
@@ -1606,9 +1607,8 @@ void kvm_cpu_synchronize_post_init(CPUState *cpu)
     cpu->kvm_vcpu_dirty = false;
 }
 
-int kvm_cpu_exec(CPUArchState *env)
+int kvm_cpu_exec(CPUState *cpu)
 {
-    CPUState *cpu = ENV_GET_CPU(env);
     struct kvm_run *run = cpu->kvm_run;
     int ret, run_ret;
 
@@ -1687,7 +1687,7 @@ int kvm_cpu_exec(CPUArchState *env)
             ret = -1;
             break;
         case KVM_EXIT_INTERNAL_ERROR:
-            ret = kvm_handle_internal_error(env, run);
+            ret = kvm_handle_internal_error(cpu, run);
             break;
         default:
             DPRINTF("kvm_arch_handle_exit\n");
@@ -1697,7 +1697,7 @@ int kvm_cpu_exec(CPUArchState *env)
     } while (ret == 0);
 
     if (ret < 0) {
-        cpu_dump_state(env, stderr, fprintf, CPU_DUMP_CODE);
+        cpu_dump_state(cpu, stderr, fprintf, CPU_DUMP_CODE);
         vm_stop(RUN_STATE_INTERNAL_ERROR);
     }
 
@@ -2036,9 +2036,8 @@ void kvm_remove_all_breakpoints(CPUArchState *current_env)
 }
 #endif /* !KVM_CAP_SET_GUEST_DEBUG */
 
-int kvm_set_signal_mask(CPUArchState *env, const sigset_t *sigset)
+int kvm_set_signal_mask(CPUState *cpu, const sigset_t *sigset)
 {
-    CPUState *cpu = ENV_GET_CPU(env);
     struct kvm_signal_mask *sigmask;
     int r;
 
