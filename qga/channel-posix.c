@@ -243,7 +243,12 @@ GIOStatus ga_channel_write_all(GAChannel *c, const gchar *buf, gsize size)
 
 GIOStatus ga_channel_read(GAChannel *c, gchar *buf, gsize size, gsize *count)
 {
-    return g_io_channel_read_chars(c->client_channel, buf, size, count, NULL);
+  GError *er=NULL;
+  GIOStatus ret= g_io_channel_read_chars(c->client_channel, buf, size, count, &er);
+  g_warning("test");
+  if (er!=NULL) 
+    g_warning("error: %s\n",er->message);
+  return ret;
 }
 
 GAChannel *ga_channel_new(GAChannelMethod method, const gchar *path,

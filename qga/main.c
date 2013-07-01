@@ -69,6 +69,7 @@ struct GAState {
     JSONMessageParser parser;
     GMainLoop *main_loop;
     GAChannel *channel;
+    GAChannel *channel2;
     bool virtio; /* fastpath to check for virtio to deal with poll() quirks */
     GACommandState *command_state;
     GLogLevelFlags log_level;
@@ -662,6 +663,56 @@ static gboolean channel_event_cb(GIOCondition condition, gpointer data)
     return true;
 }
 
+
+static gboolean channel_event_cb2(GIOCondition condition, gpointer data)
+{
+    GAState *s = data;
+    gchar buf[QGA_READ_COUNT_DEFAULT+1];
+    gsize count;
+    GError *err = NULL;
+    GIOStatus status = ga_channel_read(s->channel2, buf,QGA_READ_COUNT_DEFAULT+1, &count);
+    if (err != NULL) {
+        g_warning("error reading channel: %s", err->message);
+        g_error_free(err);
+        return false;
+    }
+    switch (status) {
+    case G_IO_STATUS_ERROR:
+        g_warning("error reading channel");
+        return false;
+    case G_IO_STATUS_NORMAL:
+        buf[count] = 0;
+        g_debug("read data, count: %d, data: %s", (int)count, buf);
+        //json_message_parser_feed(&s->parser, (char *)buf, (int)count);
+        break;
+    case G_IO_STATUS_EOF:
+        g_debug("received EOF");
+	printf("status: %d, %d, %lu",status,G_IO_STATUS_NORMAL,count);
+	printf("recieved: %s\n",buf);
+	printf("EOF\n");
+	//       if (!s->virtio) {
+            return false;
+	    // }
+        /* fall through */
+    case G_IO_STATUS_AGAIN:
+        /* virtio causes us to spin here when no process is attached to
+         * host-side chardev. sleep a bit to mitigate this
+         */
+        if (s->virtio) {
+            usleep(100*1000);
+        }
+        return true;
+
+    default:
+	//ga_channel_read(s->channel2, buf, QGA_READ_COUNT_DEFAULT, &count);
+	return false;
+	
+    }
+    printf("status: %d, %d, %lu",status,G_IO_STATUS_NORMAL,count);
+    printf("recieved: %s\n",buf);
+    return true;
+}
+
 static gboolean channel_init(GAState *s, const gchar *method, const gchar *path)
 {
     GAChannelMethod channel_method;
@@ -690,7 +741,6 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path)
         g_critical("unsupported channel method/type: %s", method);
         return false;
     }
-
     s->channel = ga_channel_new(channel_method, path, channel_event_cb, s);
     if (!s->channel) {
         g_critical("failed to create guest agent channel");
@@ -699,6 +749,33 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path)
 
     return true;
 }
+
+static gboolean channel_init2(GAState *s, const gchar *method, const gchar *path)
+{
+    GAChannelMethod channel_method;
+
+    if (strcmp(method, "virtio-serial") == 0) {
+        s->virtio = true; /* virtio requires special handling in some cases */
+        channel_method = GA_CHANNEL_VIRTIO_SERIAL;
+    } else if (strcmp(method, "isa-serial") == 0) {
+        channel_method = GA_CHANNEL_ISA_SERIAL;
+    } else if (strcmp(method, "unix-listen") == 0) {
+        channel_method = GA_CHANNEL_UNIX_LISTEN;
+    } else {
+        g_critical("unsupported channel method/type: %s", method);
+        return false;
+    }
+    
+    s->channel2 = ga_channel_new(channel_method, path, channel_event_cb2, s);
+    if (!s->channel2) {
+        g_critical("failed to create guest agent channel for sessions");
+        return false;
+    }
+
+    return true;
+}
+
+
 
 #ifdef _WIN32
 DWORD WINAPI service_ctrl_handler(DWORD ctrl, DWORD type, LPVOID data,
@@ -1167,6 +1244,12 @@ int main(int argc, char **argv)
         g_critical("failed to initialize guest agent channel");
         goto out_bad;
     }
+    /////////////
+    if (!channel_init2(ga_state, "unix-listen", "/tmp/sock1")) {
+	g_critical("failed to init the temp socket");
+	goto out_bad;
+    }
+    /////////////
 #ifndef _WIN32
     g_main_loop_run(ga_state->main_loop);
 #else
