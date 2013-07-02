@@ -691,7 +691,7 @@ static gboolean channel_event_cb2(GIOCondition condition, gpointer data)
 	printf("recieved: %s\n",buf);
 	printf("EOF\n");
 	//       if (!s->virtio) {
-            return false;
+        return false;
 	    // }
         /* fall through */
     case G_IO_STATUS_AGAIN:
