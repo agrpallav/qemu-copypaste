@@ -8,6 +8,7 @@
 #include "qemu/osdep.h"
 #include "qemu/sockets.h"
 #include "qga/channel.h"
+#include "qapi/qmp/json-streamer.h"
 
 #ifdef CONFIG_SOLARIS
 #include <stropts.h>
@@ -15,20 +16,14 @@
 
 #define GA_CHANNEL_BAUDRATE_DEFAULT B38400 /* for isa-serial channels */
 
-struct GAChannel {
-    GIOChannel *listen_channel;
-    GIOChannel *client_channel;
-    GAChannelMethod method;
-    GAChannelCallback event_cb;
-    gpointer user_data;
-};
 
-static int ga_channel_client_add(GAChannel *c, int fd);
+static int ga_channel_client_add(GAChannelListener *c, int fd);
+static void ga_channel_client_free(GAChannelClient *chc);
 
 static gboolean ga_channel_listen_accept(GIOChannel *channel,
                                          GIOCondition condition, gpointer data)
 {
-    GAChannel *c = data;
+    GAChannelListener *chl = data;
     int ret, client_fd;
     bool accepted = false;
     struct sockaddr_un addr;
@@ -43,96 +38,123 @@ static gboolean ga_channel_listen_accept(GIOChannel *channel,
         goto out;
     }
     fcntl(client_fd, F_SETFL, O_NONBLOCK);
-    ret = ga_channel_client_add(c, client_fd);
+    ret = ga_channel_client_add(chl, client_fd);
     if (ret) {
         g_warning("error setting up connection");
         close(client_fd);
         goto out;
     }
-    accepted = true;
+    if (chl->type != GA_CHANNEL_SESSION_CLIENT) {
+        accepted = true;
+    }
 
 out:
-    /* only accept 1 connection at a time */
+    /* only accept 1 connection at a time for GAChannelType GA_CHANNEL_HOST */
     return !accepted;
 }
 
-/* start polling for readable events on listen fd, new==true
+/* start polling for readable events on listen fd, create==false
  * indicates we should use the existing s->listen_channel
  */
-static void ga_channel_listen_add(GAChannel *c, int listen_fd, bool create)
+static void ga_channel_listen_add(GAChannelListener *chl, int listen_fd, bool create)
 {
     if (create) {
-        c->listen_channel = g_io_channel_unix_new(listen_fd);
+        chl->channel = g_io_channel_unix_new(listen_fd);
     }
-    g_io_add_watch(c->listen_channel, G_IO_IN, ga_channel_listen_accept, c);
+    g_io_add_watch(chl->channel, G_IO_IN, ga_channel_listen_accept, chl);
 }
 
-static void ga_channel_listen_close(GAChannel *c)
+static void ga_channel_listen_close(GAChannelListener *chl)
 {
-    g_assert(c->method == GA_CHANNEL_UNIX_LISTEN);
-    g_assert(c->listen_channel);
-    g_io_channel_shutdown(c->listen_channel, true, NULL);
-    g_io_channel_unref(c->listen_channel);
-    c->listen_channel = NULL;
+    g_assert(chl->method == GA_CHANNEL_UNIX_LISTEN);
+    g_assert(chl->channel);
+    g_io_channel_shutdown(chl->channel, true, NULL);
+    g_io_channel_unref(chl->channel);
+    chl->channel = NULL;
 }
 
 /* cleanup state for closed connection/session, start accepting new
  * connections if we're in listening mode
  */
-static void ga_channel_client_close(GAChannel *c)
+static void ga_channel_client_close(GAChannelClient *chc)
 {
-    g_assert(c->client_channel);
-    g_io_channel_shutdown(c->client_channel, true, NULL);
-    g_io_channel_unref(c->client_channel);
-    c->client_channel = NULL;
-    if (c->method == GA_CHANNEL_UNIX_LISTEN && c->listen_channel) {
-        ga_channel_listen_add(c, 0, false);
+    GAChannelListener *chl = chc->listener;
+    g_assert(chc->channel);
+    g_io_channel_shutdown(chc->channel, true, NULL);
+    g_io_channel_unref(chc->channel);
+    chc->channel = NULL;
+    if (chl->type == GA_CHANNEL_SESSION_CLIENT) {
+        g_ptr_array_remove(chl->client.sessions, chc);
+    } else {
+        chl->client.host = NULL;
+    }
+    if (chl->method == GA_CHANNEL_UNIX_LISTEN && chl->channel && chl->type != GA_CHANNEL_SESSION_CLIENT) {
+        ga_channel_listen_add(chl, 0, false);
     }
 }
 
 static gboolean ga_channel_client_event(GIOChannel *channel,
                                         GIOCondition condition, gpointer data)
 {
-    GAChannel *c = data;
+    GAChannelClient *chc = data;
     gboolean client_cont;
+    g_assert(chc);
+    GAChannelCallback ecb = chc->listener->event_cb;
 
-    g_assert(c);
-    if (c->event_cb) {
-        client_cont = c->event_cb(condition, c->user_data);
+    if (ecb) {
+        client_cont = ecb(condition, chc);
         if (!client_cont) {
-            ga_channel_client_close(c);
+            ga_channel_client_close(chc);
+            ga_channel_client_free(chc);
             return false;
         }
     }
     return true;
 }
 
-static int ga_channel_client_add(GAChannel *c, int fd)
+static int ga_channel_client_add(GAChannelListener *chl, int fd)
 {
     GIOChannel *client_channel;
+    GAChannelClient *chc;
     GError *err = NULL;
+    static guint counter = 1;
 
-    g_assert(c && !c->client_channel);
+    g_assert(chl);
     client_channel = g_io_channel_unix_new(fd);
     g_assert(client_channel);
-    g_io_channel_set_encoding(client_channel, NULL, &err);
+    g_io_channel_set_encoding(client_channel, "UTF-8", &err);
     if (err != NULL) {
         g_warning("error setting channel encoding to binary");
         g_error_free(err);
         return -1;
     }
+
+    chc = (GAChannelClient *) malloc(sizeof(GAChannelClient));
+    chc->channel = client_channel;
+    json_message_parser_init(&chc->parser, chl->json_cb);
+    chc->id = counter++;
+    chc->delimit_response = false;
+    chc->listener = chl;
+
+    if (chl->type == GA_CHANNEL_SESSION_CLIENT) {
+        g_ptr_array_add(chl->client.sessions,chc);
+    } else {
+        g_assert(chl->client.host == NULL);
+        chl->client.host = chc;
+    }
+
     g_io_add_watch(client_channel, G_IO_IN | G_IO_HUP,
-                   ga_channel_client_event, c);
-    c->client_channel = client_channel;
+                   ga_channel_client_event, chc);
+
     return 0;
 }
 
-static gboolean ga_channel_open(GAChannel *c, const gchar *path, GAChannelMethod method)
+static gboolean ga_channel_open(GAChannelListener *chl, const gchar *path, GAChannelMethod method)
 {
     int ret;
-    c->method = method;
+    chl->method = method;
 
-    switch (c->method) {
+    switch (chl->method) {
     case GA_CHANNEL_VIRTIO_SERIAL: {
         int fd = qemu_open(path, O_RDWR | O_NONBLOCK
 #ifndef CONFIG_SOLARIS
@@ -152,7 +174,7 @@ static gboolean ga_channel_open(GAChannel *c, const gchar *path, GAChannelMethod
             return false;
         }
 #endif
-        ret = ga_channel_client_add(c, fd);
+        ret = ga_channel_client_add(chl, fd);
         if (ret) {
             g_critical("error adding channel to main loop");
             close(fd);
@@ -183,7 +205,7 @@ static gboolean ga_channel_open(GAChannel *c, const gchar *path, GAChannelMethod
         /* flush everything waiting for read/xmit, it's garbage at this point */
         tcflush(fd, TCIFLUSH);
         tcsetattr(fd, TCSANOW, &tio);
-        ret = ga_channel_client_add(c, fd);
+        ret = ga_channel_client_add(chl, fd);
         if (ret) {
             g_critical("error adding channel to main loop");
             close(fd);
@@ -199,7 +221,7 @@ static gboolean ga_channel_open(GAChannel *c, const gchar *path, GAChannelMethod
             error_free(local_err);
             return false;
         }
-        ga_channel_listen_add(c, fd, true);
+        ga_channel_listen_add(chl, fd, true);
         break;
     }
     default:
@@ -210,14 +232,14 @@ static gboolean ga_channel_open(GAChannel *c, const gchar *path, GAChannelMethod
     return true;
 }
 
-GIOStatus ga_channel_write_all(GAChannel *c, const gchar *buf, gsize size)
+GIOStatus ga_channel_write_all(GAChannelClient *chc, const gchar *buf, gsize size)
 {
     GError *err = NULL;
     gsize written = 0;
     GIOStatus status = G_IO_STATUS_NORMAL;
 
     while (size) {
-        status = g_io_channel_write_chars(c->client_channel, buf, size,
+        status = g_io_channel_write_chars(chc->channel, buf, size,
                                           &written, &err);
         g_debug("sending data, count: %d", (int)size);
         if (err != NULL) {
@@ -231,7 +253,7 @@ GIOStatus ga_channel_write_all(GAChannel *c, const gchar *buf, gsize size)
     }
 
     if (status == G_IO_STATUS_NORMAL) {
-        status = g_io_channel_flush(c->client_channel, &err);
+        status = g_io_channel_flush(chc->channel, &err);
         if (err != NULL) {
             g_warning("error flushing channel: %s", err->message);
             return G_IO_STATUS_ERROR;
@@ -241,40 +263,52 @@ GIOStatus ga_channel_write_all(GAChannel *c, const gchar *buf, gsize size)
     return status;
 }
 
-GIOStatus ga_channel_read(GAChannel *c, gchar *buf, gsize size, gsize *count)
+GIOStatus ga_channel_read(GAChannelClient *chc, gchar *buf, gsize size, gsize *count)
 {
-  GError *er=NULL;
-  GIOStatus ret= g_io_channel_read_chars(c->client_channel, buf, size, count, &er);
-  g_warning("test");
-  if (er!=NULL) 
-    g_warning("error: %s\n",er->message);
-  return ret;
+    GError *er = NULL;
+    GIOStatus ret = g_io_channel_read_chars(chc->channel, buf, size, count, &er);
+    g_warning("test");
+    if (er != NULL) {
+        g_warning("error: %s\n",er->message);
+    }
+    return ret;
 }
 
-GAChannel *ga_channel_new(GAChannelMethod method, const gchar *path,
-                          GAChannelCallback cb, gpointer opaque)
+GAChannelListener *ga_channel_new(GAChannelMethod method, const gchar *path,
+                                  GAChannelCallback cb, JSONMessageParserCallback jcb, GAChannelType channel_type)
 {
-    GAChannel *c = g_malloc0(sizeof(GAChannel));
-    c->event_cb = cb;
-    c->user_data = opaque;
+    GAChannelListener *chl = g_malloc0(sizeof(GAChannelListener));
+    chl->event_cb = cb;
+    chl->json_cb = jcb;
+    chl->type = channel_type;
 
-    if (!ga_channel_open(c, path, method)) {
+    if (channel_type == GA_CHANNEL_SESSION_CLIENT) {
+        chl->client.sessions = g_ptr_array_new();
+    }
+
+    if (!ga_channel_open(chl, path, method)) {
         g_critical("error opening channel");
-        ga_channel_free(c);
+        ga_channel_listener_free(chl);
         return NULL;
     }
 
-    return c;
+    return chl;
 }
 
-void ga_channel_free(GAChannel *c)
+void ga_channel_client_free(GAChannelClient *chc)
 {
-    if (c->method == GA_CHANNEL_UNIX_LISTEN
-        && c->listen_channel) {
-        ga_channel_listen_close(c);
+    if (chc->channel) {
+        ga_channel_client_close(chc);
     }
-    if (c->client_channel) {
-        ga_channel_client_close(c);
+    g_free(chc);
+}
+
+
+void ga_channel_listener_free(GAChannelListener *chl)
+{
+    g_assert(chl);
+    if (chl->method == GA_CHANNEL_UNIX_LISTEN && chl->channel) {
+        ga_channel_listen_close(chl);
     }
-    g_free(c);
+    g_free(chl);
 }

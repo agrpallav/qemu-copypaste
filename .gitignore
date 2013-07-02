@@ -73,7 +73,6 @@ fsdev/virtfs-proxy-helper.pod
 *.tp
 *.vr
 *.d
-*.out
 !scripts/qemu-guest-agent/fsfreeze-hook.d
 *.o
 *.lo
@@ -107,4 +106,3 @@ cscope.*
 tags
 TAGS
 *~
-bin/

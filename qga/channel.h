@@ -13,8 +13,10 @@
 #define QGA_CHANNEL_H
 
 #include <glib.h>
+#include "qapi/qmp/json-streamer.h"
 
-typedef struct GAChannel GAChannel;
+typedef struct GAChannelListener GAChannelListener;
+typedef struct GAChannelClient GAChannelClient;
 
 typedef enum {
     GA_CHANNEL_VIRTIO_SERIAL,
@@ -22,12 +24,40 @@ typedef enum {
     GA_CHANNEL_UNIX_LISTEN,
 } GAChannelMethod;
 
-typedef gboolean (*GAChannelCallback)(GIOCondition condition, gpointer opaque);
+typedef enum {
+    GA_CHANNEL_HOST,                //To Qemu Host
+    GA_CHANNEL_SESSION_CLIENT,      //To Session Processes
+    GA_CHANNEL_SESSION_HOST         //To Qemu Host for session client communication
+} GAChannelType;
 
-GAChannel *ga_channel_new(GAChannelMethod method, const gchar *path,
-                          GAChannelCallback cb, gpointer opaque);
-void ga_channel_free(GAChannel *c);
-GIOStatus ga_channel_read(GAChannel *c, gchar *buf, gsize size, gsize *count);
-GIOStatus ga_channel_write_all(GAChannel *c, const gchar *buf, gsize size);
+typedef gboolean (*GAChannelCallback)(GIOCondition condition, GAChannelClient *chc);
+typedef void (*JSONMessageParserCallback)(JSONMessageParser *, QList *);
 
+#ifndef _WIN32
+struct GAChannelListener {
+    GIOChannel *channel;
+    GAChannelMethod method;
+    GAChannelType type;
+    GAChannelCallback event_cb;
+    JSONMessageParserCallback json_cb;
+    gpointer state;
+    union {
+        GPtrArray *sessions; //only used when type == SESSION_CLIENT
+        GAChannelClient *host; //used otherwise
+    } client;
+};
+
+struct GAChannelClient {
+    GIOChannel *channel;
+    JSONMessageParser parser;
+    guint id;
+    bool delimit_response;
+    GAChannelListener *listener;
+};
+#endif
+GAChannelListener *ga_channel_new(GAChannelMethod method, const gchar *path, GAChannelCallback cb,
+                                  JSONMessageParserCallback jcb, GAChannelType channel_type);
+void ga_channel_listener_free(GAChannelListener *chl);
+GIOStatus ga_channel_read(GAChannelClient *chc, gchar *buf, gsize size, gsize *count);
+GIOStatus ga_channel_write_all(GAChannelClient *chc, const gchar *buf, gsize size);
 #endif
