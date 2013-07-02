@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include "qemu/osdep.h"
 #include "qemu/sockets.h"
 #include "qga/channel.h"
@@ -19,6 +20,7 @@ struct GAChannel {
     GIOChannel *listen_channel;
     GIOChannel *client_channel;
     GAChannelMethod method;
+    GAChannelType type;
     GAChannelCallback event_cb;
     gpointer user_data;
 };
@@ -49,7 +51,7 @@ static gboolean ga_channel_listen_accept(GIOChannel *channel,
         close(client_fd);
         goto out;
     }
-    accepted = true;
+        accepted = true;
 
 out:
     /* only accept 1 connection at a time */
@@ -81,6 +83,7 @@ static void ga_channel_listen_close(GAChannel *c)
  */
 static void ga_channel_client_close(GAChannel *c)
 {
+  printf("closing client\n");
     g_assert(c->client_channel);
     g_io_channel_shutdown(c->client_channel, true, NULL);
     g_io_channel_unref(c->client_channel);
@@ -112,7 +115,7 @@ static int ga_channel_client_add(GAChannel *c, int fd)
     GIOChannel *client_channel;
     GError *err = NULL;
 
-    g_assert(c && !c->client_channel);
+    // g_assert(c && !c->client_channel);
     client_channel = g_io_channel_unix_new(fd);
     g_assert(client_channel);
     g_io_channel_set_encoding(client_channel, NULL, &err);
