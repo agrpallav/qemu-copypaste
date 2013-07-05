@@ -19,10 +19,13 @@
 struct GAChannel {
     GIOChannel *listen_channel;
     GIOChannel *client_channel;
+    
     GAChannelMethod method;
     GAChannelType type;
     GAChannelCallback event_cb;
     gpointer user_data;
+    guint id;
+//    GPtrArray *channel_sproc_array;
 };
 
 static int ga_channel_client_add(GAChannel *c, int fd);
@@ -51,10 +54,11 @@ static gboolean ga_channel_listen_accept(GIOChannel *channel,
         close(client_fd);
         goto out;
     }
+    if (c->type != GA_CHANNEL_SPROC)
         accepted = true;
 
 out:
-    /* only accept 1 connection at a time */
+    /* only accept 1 connection at a time for GAChannelType GA_CHANNEL_HOST */
     return !accepted;
 }
 
@@ -88,7 +92,7 @@ static void ga_channel_client_close(GAChannel *c)
     g_io_channel_shutdown(c->client_channel, true, NULL);
     g_io_channel_unref(c->client_channel);
     c->client_channel = NULL;
-    if (c->method == GA_CHANNEL_UNIX_LISTEN && c->listen_channel) {
+    if (c->method == GA_CHANNEL_UNIX_LISTEN && c->listen_channel && c->type == GA_CHANNEL_HOST) {
         ga_channel_listen_add(c, 0, false);
     }
 }
@@ -104,6 +108,9 @@ static gboolean ga_channel_client_event(GIOChannel *channel,
         client_cont = c->event_cb(condition, c->user_data);
         if (!client_cont) {
             ga_channel_client_close(c);
+            if (c->id != 1) {
+                free(c);
+            }
             return false;
         }
     }
@@ -114,6 +121,8 @@ static int ga_channel_client_add(GAChannel *c, int fd)
 {
     GIOChannel *client_channel;
     GError *err = NULL;
+    GAChannel *c_new;
+    static guint counter = 1;
 
     // g_assert(c && !c->client_channel);
     client_channel = g_io_channel_unix_new(fd);
@@ -124,9 +133,18 @@ static int ga_channel_client_add(GAChannel *c, int fd)
         g_error_free(err);
         return -1;
     }
+
+// Make a new GAChannel struct for each accepted connection
+    if (c->client_channel != NULL) {
+        c_new = ga_channel_copy(c);
+    } else {
+        c_new = c;
+    }
+    c_new->id = counter++;
+    c_new->client_channel = client_channel;
+
     g_io_add_watch(client_channel, G_IO_IN | G_IO_HUP,
-                   ga_channel_client_event, c);
-    c->client_channel = client_channel;
+                   ga_channel_client_event, c_new);
     return 0;
 }
 
@@ -246,28 +264,40 @@ GIOStatus ga_channel_write_all(GAChannel *c, const gchar *buf, gsize size)
 
 GIOStatus ga_channel_read(GAChannel *c, gchar *buf, gsize size, gsize *count)
 {
-  GError *er=NULL;
-  GIOStatus ret= g_io_channel_read_chars(c->client_channel, buf, size, count, &er);
-  g_warning("test");
-  if (er!=NULL) 
-    g_warning("error: %s\n",er->message);
-  return ret;
+    GError *er=NULL;
+    GIOStatus ret= g_io_channel_read_chars(c->client_channel, buf, size, count, &er);
+    g_warning("test");
+    if (er!=NULL) 
+        g_warning("error: %s\n",er->message);
+    return ret;
 }
 
 GAChannel *ga_channel_new(GAChannelMethod method, const gchar *path,
-                          GAChannelCallback cb, gpointer opaque)
+                          GAChannelCallback cb, gpointer opaque, GAChannelType channel_type)
 {
     GAChannel *c = g_malloc0(sizeof(GAChannel));
     c->event_cb = cb;
     c->user_data = opaque;
+    c->type = channel_type;
+    c->client_channel = NULL;
 
     if (!ga_channel_open(c, path, method)) {
         g_critical("error opening channel");
         ga_channel_free(c);
         return NULL;
     }
-
+    
     return c;
+}
+
+GAChannel *ga_channel_copy(GAChannel *c)
+{
+    GAChannel *n = g_malloc0(sizeof(GAChannel));
+    n->event_cb = c->event_cb;
+    n->user_data = c->user_data;
+    n->type = c->type;
+    n->client_channel = NULL;
+    n->listen_channel = c->listen_channel;
 }
 
 void ga_channel_free(GAChannel *c)
