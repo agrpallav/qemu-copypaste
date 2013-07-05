@@ -23,8 +23,8 @@ typedef enum {
 } GAChannelMethod;
 
 typedef enum {
-    GA_CHANNEL_TO_HOST,       //To Qemu Host
-    GA_CHANNEL_TO_SPROC       //To Session PROCesses
+    GA_CHANNEL_HOST,       //To Qemu Host
+    GA_CHANNEL_SPROC       //To Session PROCesses
 } GAChannelType;
 
 typedef gboolean (*GAChannelCallback)(GIOCondition condition, gpointer opaque);

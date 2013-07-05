@@ -68,8 +68,8 @@ typedef struct GAPersistentState {
 struct GAState {
     JSONMessageParser parser;
     GMainLoop *main_loop;
-    GAChannel *channel;
-    GAChannel *channel2;
+    GAChannel *channel_host;
+    struct GPtrArray *channel_sproc_array;
     bool virtio; /* fastpath to check for virtio to deal with poll() quirks */
     GACommandState *command_state;
     GLogLevelFlags log_level;
@@ -713,7 +713,7 @@ static gboolean channel_event_cb2(GIOCondition condition, gpointer data)
     return true;
 }
 
-static gboolean channel_init(GAState *s, const gchar *method, const gchar *path)
+ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path, GAChannelType channel_type)
 {
     GAChannelMethod channel_method;
 
@@ -741,10 +741,27 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path)
         g_critical("unsupported channel method/type: %s", method);
         return false;
     }
-    s->channel = ga_channel_new(channel_method, path, channel_event_cb, s);
-    if (!s->channel) {
-        g_critical("failed to create guest agent channel");
-        return false;
+
+    switch (channel_type)
+    {
+        GA_CHANNEL_HOST:
+            s->channel_host = ga_channel_new(channel_method, path, channel_event_cb, s, channel_type);
+            if (!s->channel_host) {
+                g_critical("failed to create guest agent channel: type host");
+                return false;
+            }
+            break;
+        GA_CHANNEL_SPROC:
+            GAChannel *channel_sproc = ga_channel_new(channel_method, path, channel_event_cb, s, channel_type);
+            if (channel_sproc) {
+                g_critical("failed to create guest agent channel: type sproc");
+                return false;
+            }
+            g_ptr_array_add(s->channel_sproc_array, channel_sproc);
+            break;
+        default:
+            g_critical("Unrecognized GAChannelType");
+            return false;
     }
 
     return true;
@@ -1231,6 +1248,7 @@ int main(int argc, char **argv)
     ga_command_state_init(s, s->command_state);
     ga_command_state_init_all(s->command_state);
     json_message_parser_init(&s->parser, process_event);
+    s->channel_sproc_array = g_ptr_array_new();
     ga_state = s;
 #ifndef _WIN32
     if (!register_signal_handlers()) {
