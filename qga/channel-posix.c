@@ -24,11 +24,12 @@ struct GAChannel {
     GAChannelType type;
     GAChannelCallback event_cb;
     gpointer user_data;
+    GPtrArray *channel_sproc_array;
     guint id;
-//    GPtrArray *channel_sproc_array;
 };
 
 static int ga_channel_client_add(GAChannel *c, int fd);
+static GAChannel *ga_channel_copy(GAChannel *c);
 
 static gboolean ga_channel_listen_accept(GIOChannel *channel,
                                          GIOCondition condition, gpointer data)
@@ -62,7 +63,7 @@ out:
     return !accepted;
 }
 
-/* start polling for readable events on listen fd, new==true
+/* start polling for readable events on listen fd, create==false
  * indicates we should use the existing s->listen_channel
  */
 static void ga_channel_listen_add(GAChannel *c, int listen_fd, bool create)
@@ -105,11 +106,12 @@ static gboolean ga_channel_client_event(GIOChannel *channel,
 
     g_assert(c);
     if (c->event_cb) {
-        client_cont = c->event_cb(condition, c->user_data);
+        client_cont = c->event_cb(condition, c->user_data, c);
         if (!client_cont) {
             ga_channel_client_close(c);
             if (c->id != 1) {
-                free(c);
+                c->listen_channel = NULL;    //Cant close the listener yet
+                ga_channel_free(c);
             }
             return false;
         }
@@ -124,7 +126,7 @@ static int ga_channel_client_add(GAChannel *c, int fd)
     GAChannel *c_new;
     static guint counter = 1;
 
-    // g_assert(c && !c->client_channel);
+    g_assert(c);
     client_channel = g_io_channel_unix_new(fd);
     g_assert(client_channel);
     g_io_channel_set_encoding(client_channel, NULL, &err);
@@ -136,10 +138,13 @@ static int ga_channel_client_add(GAChannel *c, int fd)
 
 // Make a new GAChannel struct for each accepted connection
     if (c->client_channel != NULL) {
+        g_assert(c->type == GA_CHANNEL_SPROC);
         c_new = ga_channel_copy(c);
+        g_ptr_array_add(c_new->channel_sproc_array,c_new);
     } else {
         c_new = c;
     }
+    g_assert(c_new->id<1);
     c_new->id = counter++;
     c_new->client_channel = client_channel;
 
@@ -290,14 +295,17 @@ GAChannel *ga_channel_new(GAChannelMethod method, const gchar *path,
     return c;
 }
 
-GAChannel *ga_channel_copy(GAChannel *c)
+static GAChannel *ga_channel_copy(GAChannel *c)
 {
     GAChannel *n = g_malloc0(sizeof(GAChannel));
+    n->listen_channel = c->listen_channel;
+    n->client_channel = NULL;
+    n->method = c->method;
+    n->type = c->type;
     n->event_cb = c->event_cb;
     n->user_data = c->user_data;
-    n->type = c->type;
-    n->client_channel = NULL;
-    n->listen_channel = c->listen_channel;
+    n->channel_sproc_array = c->channel_sproc_array;
+    return n;
 }
 
 void ga_channel_free(GAChannel *c)
@@ -309,5 +317,18 @@ void ga_channel_free(GAChannel *c)
     if (c->client_channel) {
         ga_channel_client_close(c);
     }
+    if (c->type == GA_CHANNEL_SPROC) {
+        g_ptr_array_remove(c->channel_sproc_array, c);
+    }
     g_free(c);
+}
+
+GAChannelMethod ga_channel_get_method(GAChannel *c)
+{
+    return c->method;
+}
+
+void ga_channel_set_sproc_array(GAChannel *c, GPtrArray *a)
+{
+    c->channel_sproc_array = a;
 }
