@@ -7,7 +7,7 @@
 
 
 //char *socket_path = "./socket";
-char *socket_path = "/tmp/sock1";
+char *socket_path = "/tmp/sproc.sock";
 
 int main(int argc, char *argv[]) {
   struct sockaddr_un addr;
@@ -30,19 +30,21 @@ int main(int argc, char *argv[]) {
     exit(-1);
   }
 GIOChannel *gc = g_io_channel_unix_new(fd);
-g_io_channel_set_encoding(gc,NULL, NULL);
+GIOStatus t = g_io_channel_set_encoding(gc,"UTF-8", NULL);
+if (t != G_IO_STATUS_NORMAL) printf("WRONG\n");
 gsize wrote;
 //const gchar buff[10];
-
-GIOStatus st=g_io_channel_write_chars(gc, "my name is pallav", -1, &wrote, NULL);
+sprintf(buf,"my name is pallav");
+printf("printing: %s",buf);
+GIOStatus st=g_io_channel_write_chars(gc, "pallav is my name\0", -1, &wrote, NULL);
 g_io_channel_flush(gc,NULL);
 printf("wrote: %d status: %d\n",wrote,st);
 
 sleep(3);
-
-st=g_io_channel_write_chars(gc, "my name is anshu", -1, &wrote, NULL);
+sprintf(buf,"name is anshu");
+st=g_io_channel_write_chars(gc, "anshu is my", -1, &wrote, NULL);
 g_io_channel_flush(gc,NULL);
-sleep(2);
+//sleep(2);
 
 //write(fd, "my name is pallav",rc);
 /*

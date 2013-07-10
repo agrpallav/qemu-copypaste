@@ -5,7 +5,6 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 #include "qemu/osdep.h"
 #include "qemu/sockets.h"
 #include "qga/channel.h"
@@ -19,7 +18,6 @@
 struct GAChannel {
     GIOChannel *listen_channel;
     GIOChannel *client_channel;
-    
     GAChannelMethod method;
     GAChannelType type;
     GAChannelCallback event_cb;
@@ -55,8 +53,11 @@ static gboolean ga_channel_listen_accept(GIOChannel *channel,
         close(client_fd);
         goto out;
     }
-    if (c->type != GA_CHANNEL_SPROC)
+    if (c->type != GA_CHANNEL_SPROC) {
         accepted = true;
+    } else {
+        g_assert(c->channel_sproc_array);
+    }
 
 out:
     /* only accept 1 connection at a time for GAChannelType GA_CHANNEL_HOST */
@@ -88,11 +89,11 @@ static void ga_channel_listen_close(GAChannel *c)
  */
 static void ga_channel_client_close(GAChannel *c)
 {
-  printf("closing client\n");
     g_assert(c->client_channel);
     g_io_channel_shutdown(c->client_channel, true, NULL);
     g_io_channel_unref(c->client_channel);
     c->client_channel = NULL;
+    g_critical("id: %d, client closed",c->id);
     if (c->method == GA_CHANNEL_UNIX_LISTEN && c->listen_channel && c->type == GA_CHANNEL_HOST) {
         ga_channel_listen_add(c, 0, false);
     }
@@ -129,7 +130,7 @@ static int ga_channel_client_add(GAChannel *c, int fd)
     g_assert(c);
     client_channel = g_io_channel_unix_new(fd);
     g_assert(client_channel);
-    g_io_channel_set_encoding(client_channel, NULL, &err);
+    g_io_channel_set_encoding(client_channel, "UTF-8", &err);
     if (err != NULL) {
         g_warning("error setting channel encoding to binary");
         g_error_free(err);
@@ -140,12 +141,20 @@ static int ga_channel_client_add(GAChannel *c, int fd)
     if (c->client_channel != NULL) {
         g_assert(c->type == GA_CHANNEL_SPROC);
         c_new = ga_channel_copy(c);
+        g_assert(c->channel_sproc_array);
         g_ptr_array_add(c_new->channel_sproc_array,c_new);
+        g_critical("here2");
     } else {
         c_new = c;
     }
-    g_assert(c_new->id<1);
-    c_new->id = counter++;
+    g_assert(c_new->id<=1);
+
+// id==1 is reserved for original listening GAChannel. It can accept a client but it is treated especially as it cannot be freed until the listener is closed.
+    if (c->type == GA_CHANNEL_SPROC && c_new->id != 1) {
+        g_critical("assigning id: %d",counter);
+        c_new->id = counter;
+        counter++;
+    }
     c_new->client_channel = client_channel;
 
     g_io_add_watch(client_channel, G_IO_IN | G_IO_HUP,
@@ -269,11 +278,12 @@ GIOStatus ga_channel_write_all(GAChannel *c, const gchar *buf, gsize size)
 
 GIOStatus ga_channel_read(GAChannel *c, gchar *buf, gsize size, gsize *count)
 {
-    GError *er=NULL;
-    GIOStatus ret= g_io_channel_read_chars(c->client_channel, buf, size, count, &er);
+    GError *er = NULL;
+    GIOStatus ret = g_io_channel_read_chars(c->client_channel, buf, size, count, &er);
     g_warning("test");
-    if (er!=NULL) 
+    if (er != NULL) {
         g_warning("error: %s\n",er->message);
+    }
     return ret;
 }
 
@@ -285,18 +295,18 @@ GAChannel *ga_channel_new(GAChannelMethod method, const gchar *path,
     c->user_data = opaque;
     c->type = channel_type;
     c->client_channel = NULL;
-
     if (!ga_channel_open(c, path, method)) {
         g_critical("error opening channel");
         ga_channel_free(c);
         return NULL;
     }
-    
+
     return c;
 }
 
 static GAChannel *ga_channel_copy(GAChannel *c)
 {
+    g_critical("Copying channel");
     GAChannel *n = g_malloc0(sizeof(GAChannel));
     n->listen_channel = c->listen_channel;
     n->client_channel = NULL;
@@ -326,6 +336,11 @@ void ga_channel_free(GAChannel *c)
 GAChannelMethod ga_channel_get_method(GAChannel *c)
 {
     return c->method;
+}
+
+GAChannelType ga_channel_get_type(GAChannel *c)
+{
+    return c->type;
 }
 
 void ga_channel_set_sproc_array(GAChannel *c, GPtrArray *a)
