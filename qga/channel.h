@@ -14,7 +14,6 @@
 
 #include <glib.h>
 
-
 typedef struct GAChannel GAChannel;
 
 typedef enum {
@@ -36,5 +35,6 @@ void ga_channel_free(GAChannel *c);
 GIOStatus ga_channel_read(GAChannel *c, gchar *buf, gsize size, gsize *count);
 GIOStatus ga_channel_write_all(GAChannel *c, const gchar *buf, gsize size);
 GAChannelMethod ga_channel_get_method(GAChannel *c);
+GAChannelType ga_channel_get_type(GAChannel *c);
 void ga_channel_set_sproc_array(GAChannel *c, GPtrArray *a);
 #endif

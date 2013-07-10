@@ -639,9 +639,14 @@ static gboolean channel_event_cb(GIOCondition condition, gpointer data, GAChanne
         g_warning("error reading channel");
         return false;
     case G_IO_STATUS_NORMAL:
-        buf[count] = 0;
-        g_debug("read data, count: %d, data: %s", (int)count, buf);
-        json_message_parser_feed(&s->parser, (char *)buf, (int)count);
+        if (ga_channel_get_type(c) == GA_CHANNEL_SPROC) {
+            buf[count]='\0';
+            printf ("count: %lu, message: %s\n",count,buf);
+        } else {
+            buf[count] = 0;
+            g_debug("read data, count: %d, data: %s", (int)count, buf);
+            json_message_parser_feed(&s->parser, (char *)buf, (int)count);
+        }
         break;
     case G_IO_STATUS_EOF:
         g_debug("received EOF");
@@ -699,7 +704,7 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path,
     }
 
     channel = ga_channel_new(channel_method, path, channel_event_cb, s, channel_type);
-    if (channel) {
+    if (!channel) {
         g_critical("failed to create guest agent channel: type %d",channel_type);
         return false;
     }
@@ -1190,6 +1195,7 @@ int main(int argc, char **argv)
 
 #ifndef _WIN32
     g_main_loop_run(ga_state->main_loop);
+    g_critical("main loop ended");
 #else
     if (daemonize) {
         SERVICE_TABLE_ENTRY service_table[] = {
