@@ -14,7 +14,6 @@
 
 #include <glib.h>
 
-struct GAChannel;
 typedef struct GAChannel GAChannel;
 
 typedef enum {
@@ -30,6 +29,21 @@ typedef enum {
 } GAChannelType;
 
 typedef gboolean (*GAChannelCallback)(GIOCondition condition, gpointer opaque, GAChannel *channel);
+
+#ifndef _WIN32
+struct GAChannel {
+    GIOChannel *listen_channel;
+    GIOChannel *client_channel;
+    GAChannelMethod method;
+    GAChannelType type;
+    GAChannelCallback event_cb;
+    gpointer user_data;
+    GPtrArray *channel_sproc_array;
+    JSONMessageParser *parser;
+    bool delimit_response;
+    guint id;
+};
+#endif
 
 GAChannel *ga_channel_new(GAChannelMethod method, const gchar *path,
                           GAChannelCallback cb, gpointer opaque, GAChannelType channel_type);
