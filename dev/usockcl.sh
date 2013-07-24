@@ -1,2 +1,2 @@
-gcc usockcl.c -Wall `pkg-config --cflags --libs glib-2.0`
+gcc gptr.c -Wall `pkg-config --cflags --libs glib-2.0`
 

@@ -72,7 +72,7 @@ struct GAState {
     GMainLoop *main_loop;
     GAChannel *channel_host;
     GPtrArray *channel_sproc_array;
-    bool virtio; /* fastpath to check for virtio to deal with poll() quirks */
+//    bool virtio; /* fastpath to check for virtio to deal with poll() quirks */
     GACommandState *command_state;
     GLogLevelFlags log_level;
     FILE *log_file;
@@ -80,7 +80,7 @@ struct GAState {
 #ifdef _WIN32
     GAService service;
 #endif
-    bool delimit_response;
+//    bool delimit_response;
     bool frozen;
     GList *blacklist;
     const char *state_filepath_isfrozen;
@@ -287,7 +287,7 @@ static void ga_log(const gchar *domain, GLogLevelFlags level,
 
 void ga_set_response_delimited(GAState *s)
 {
-    s->delimit_response = true;
+    s->channel_host->delimit_response = true;
 }
 
 static FILE *ga_open_logfile(const char *logfile)
@@ -520,21 +520,21 @@ fail:
 #endif
 }
 
-static int send_response(GAState *s, QObject *payload)
+static int send_response(GAChannel *c, QObject *payload)
 {
     const char *buf;
     QString *payload_qstr, *response_qstr;
     GIOStatus status;
 
-    g_assert(payload && s->channel_host);
+    g_assert(payload && c);
 
     payload_qstr = qobject_to_json(payload);
     if (!payload_qstr) {
         return -EINVAL;
     }
 
-    if (s->delimit_response) {
-        s->delimit_response = false;
+    if (c->delimit_response) {
+        c->delimit_response = false;
         response_qstr = qstring_new();
         qstring_append_chr(response_qstr, QGA_SENTINEL_BYTE);
         qstring_append(response_qstr, qstring_get_str(payload_qstr));
@@ -545,7 +545,7 @@ static int send_response(GAState *s, QObject *payload)
 
     qstring_append_chr(response_qstr, '\n');
     buf = qstring_get_str(response_qstr);
-    status = ga_channel_write_all(s->channel_host, buf, strlen(buf));
+    status = ga_channel_write_all(c, buf, strlen(buf));
     QDECREF(response_qstr);
     if (status != G_IO_STATUS_NORMAL) {
         return -EIO;
@@ -554,7 +554,7 @@ static int send_response(GAState *s, QObject *payload)
     return 0;
 }
 
-static void process_command(GAState *s, QDict *req)
+static void process_command(GAChannel *c, QDict *req)
 {
     QObject *rsp = NULL;
     int ret;
@@ -563,7 +563,7 @@ static void process_command(GAState *s, QDict *req)
     g_debug("processing command");
     rsp = qmp_dispatch(QOBJECT(req));
     if (rsp) {
-        ret = send_response(s, rsp);
+        ret = send_response(c, rsp);
         if (ret) {
             g_warning("error sending response: %s", strerror(ret));
         }
@@ -603,7 +603,7 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
 
     /* handle host->guest commands */
     if (qdict_haskey(qdict, "execute")) {
-        process_command(s, qdict);
+        process_command(c, qdict);
     } else if (qdict_haskey(qdict,"return")) {
         
     } else {
@@ -615,7 +615,7 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
             qdict_put_obj(qdict, "error", qmp_build_error_object(err));
             error_free(err);
         }
-        ret = send_response(s, QOBJECT(qdict));
+        ret = send_response(c, QOBJECT(qdict));
         if (ret) {
             g_warning("error sending error response: %s", strerror(ret));
         }
@@ -940,6 +940,13 @@ int64_t ga_get_fd_handle(GAState *s, Error **errp)
 
     return handle;
 }
+
+GAChannel *ga_get_gachannel_from_parser(JSONMessageParser *p) 
+{
+    GAState *s = ga_state;
+    if (s->channel_host->parser == p) return channel_host;
+    
+}    
 
 int main(int argc, char **argv)
 {
