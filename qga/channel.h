@@ -14,6 +14,7 @@
 
 #include <glib.h>
 
+struct GAChannel;
 typedef struct GAChannel GAChannel;
 
 typedef enum {
@@ -24,7 +25,8 @@ typedef enum {
 
 typedef enum {
     GA_CHANNEL_HOST,       //To Qemu Host
-    GA_CHANNEL_SPROC       //To Session PROCesses
+    GA_CHANNEL_SPROC,      //To Session PROCesses
+    GA_CHANNEL_HOST_RPC
 } GAChannelType;
 
 typedef gboolean (*GAChannelCallback)(GIOCondition condition, gpointer opaque, GAChannel *channel);
