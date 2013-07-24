@@ -8,6 +8,7 @@
 #include "qemu/osdep.h"
 #include "qemu/sockets.h"
 #include "qga/channel.h"
+#include "qapi/qmp/json-streamer.h"
 
 #ifdef CONFIG_SOLARIS
 #include <stropts.h>
@@ -23,6 +24,7 @@ struct GAChannel {
     GAChannelCallback event_cb;
     gpointer user_data;
     GPtrArray *channel_sproc_array;
+    JSONMessageParser *parser;
     guint id;
 };
 
@@ -315,6 +317,10 @@ static GAChannel *ga_channel_copy(GAChannel *c)
     n->event_cb = c->event_cb;
     n->user_data = c->user_data;
     n->channel_sproc_array = c->channel_sproc_array;
+    
+    JSONMessageParser p;
+    json_message_parser_init(&p, c->emit);
+    n->parser = &p;
     return n;
 }
 
@@ -346,4 +352,9 @@ GAChannelType ga_channel_get_type(GAChannel *c)
 void ga_channel_set_sproc_array(GAChannel *c, GPtrArray *a)
 {
     c->channel_sproc_array = a;
+}
+
+JSONMessageParser *ga_channel_get_parser(GAChannel *c)
+{
+    return c->parser;
 }

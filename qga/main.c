@@ -45,6 +45,7 @@
 
 #ifndef _WIN32
 #define QGA_VIRTIO_PATH_DEFAULT "/dev/virtio-ports/org.qemu.guest_agent.0"
+#define QGA_SESSION_PATH_DEFAULT "/tmp/host_qga.sock"
 #define QGA_SPROC_PATH_DEFAULT "/tmp/sproc.sock"
 #define QGA_STATE_RELATIVE_DIR  "run"
 #else
@@ -67,7 +68,7 @@ typedef struct GAPersistentState {
 } GAPersistentState;
 
 struct GAState {
-    JSONMessageParser parser;
+    //JSONMessageParser parser;
     GMainLoop *main_loop;
     GAChannel *channel_host;
     GPtrArray *channel_sproc_array;
@@ -573,13 +574,13 @@ static void process_command(GAState *s, QDict *req)
 /* handle requests/control events coming in over the channel */
 static void process_event(JSONMessageParser *parser, QList *tokens)
 {
-    GAState *s = container_of(parser, GAState, parser);
+    GAChannel *c = container_of(parser, GAChannel, parser);
     QObject *obj;
     QDict *qdict;
     Error *err = NULL;
     int ret;
 
-    g_assert(s && parser);
+    g_assert(c && parser);
 
     g_debug("process_event: called");
     obj = json_parser_parse_err(tokens, NULL, &err);
@@ -603,6 +604,8 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
     /* handle host->guest commands */
     if (qdict_haskey(qdict, "execute")) {
         process_command(s, qdict);
+    } else if (qdict_haskey(qdict,"return")) {
+        
     } else {
         if (!qdict_haskey(qdict, "error")) {
             QDECREF(qdict);
@@ -645,7 +648,7 @@ static gboolean channel_event_cb(GIOCondition condition, gpointer data, GAChanne
         } else {
             buf[count] = 0;
             g_debug("read data, count: %d, data: %s", (int)count, buf);
-            json_message_parser_feed(&s->parser, (char *)buf, (int)count);
+            json_message_parser_feed(ga_channel_get_parser(c), (char *)buf, (int)count);
         }
         break;
     case G_IO_STATUS_EOF:
