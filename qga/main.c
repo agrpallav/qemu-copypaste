@@ -627,7 +627,7 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
 /* false return signals GAChannel to close the current client connection */
 static gboolean channel_event_cb(GIOCondition condition, gpointer data, GAChannel *c)
 {
-    GAState *s = data;
+//    GAState *s = data;
     gchar buf[QGA_READ_COUNT_DEFAULT+1];
     gsize count;
     GError *err = NULL;
@@ -642,18 +642,18 @@ static gboolean channel_event_cb(GIOCondition condition, gpointer data, GAChanne
         g_warning("error reading channel");
         return false;
     case G_IO_STATUS_NORMAL:
-        if (ga_channel_get_type(c) == GA_CHANNEL_SPROC) {
+        if (c->type == GA_CHANNEL_SPROC) {
             buf[count]='\0';
             printf ("count: %lu, message: %s\n",count,buf);
         } else {
             buf[count] = 0;
             g_debug("read data, count: %d, data: %s", (int)count, buf);
-            json_message_parser_feed(ga_channel_get_parser(c), (char *)buf, (int)count);
+            json_message_parser_feed(&c->parser, (char *)buf, (int)count);
         }
         break;
     case G_IO_STATUS_EOF:
         g_debug("received EOF");
-        if (ga_channel_get_method(c) != GA_CHANNEL_VIRTIO_SERIAL) {
+        if (c->method != GA_CHANNEL_VIRTIO_SERIAL) {
             return false;
         }
         /* fall through */
@@ -661,7 +661,7 @@ static gboolean channel_event_cb(GIOCondition condition, gpointer data, GAChanne
         /* virtio causes us to spin here when no process is attached to
          * host-side chardev. sleep a bit to mitigate this
          */
-        if (ga_channel_get_method(c) == GA_CHANNEL_VIRTIO_SERIAL) {
+        if (c->method == GA_CHANNEL_VIRTIO_SERIAL) {
             usleep(100*1000);
         }
         return true;
@@ -695,7 +695,7 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path,
     }
 
     if (strcmp(method, "virtio-serial") == 0) {
-        s->virtio = true; /* virtio requires special handling in some cases */
+        // s->virtio = true; /* virtio requires special handling in some cases */
         channel_method = GA_CHANNEL_VIRTIO_SERIAL;
     } else if (strcmp(method, "isa-serial") == 0) {
         channel_method = GA_CHANNEL_ISA_SERIAL;
@@ -713,12 +713,13 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path,
     }
     
     if (channel_type == GA_CHANNEL_SPROC) {
-        ga_channel_set_sproc_array(channel, s->channel_sproc_array);
+        channel->channel_sproc_array = s->channel_sproc_array;
         g_ptr_array_add(s->channel_sproc_array, channel);
     } else {
         s->channel_host = channel;
     }
 
+    json_message_parser_init(&channel->parser, process_event);
     return true;
 }
 
@@ -940,13 +941,6 @@ int64_t ga_get_fd_handle(GAState *s, Error **errp)
 
     return handle;
 }
-
-GAChannel *ga_get_gachannel_from_parser(JSONMessageParser *p) 
-{
-    GAState *s = ga_state;
-    if (s->channel_host->parser == p) return channel_host;
-    
-}    
 
 int main(int argc, char **argv)
 {
@@ -1182,7 +1176,7 @@ int main(int argc, char **argv)
     s->command_state = ga_command_state_new();
     ga_command_state_init(s, s->command_state);
     ga_command_state_init_all(s->command_state);
-    json_message_parser_init(&s->parser, process_event);
+    //json_message_parser_init(&s->parser, process_event);
     s->channel_sproc_array = g_ptr_array_new();
     ga_state = s;
 #ifndef _WIN32

@@ -13,6 +13,7 @@
 #define QGA_CHANNEL_H
 
 #include <glib.h>
+#include "qapi/qmp/json-streamer.h"
 
 typedef struct GAChannel GAChannel;
 
@@ -39,7 +40,7 @@ struct GAChannel {
     GAChannelCallback event_cb;
     gpointer user_data;
     GPtrArray *channel_sproc_array;
-    JSONMessageParser *parser;
+    JSONMessageParser parser;
     bool delimit_response;
     guint id;
 };
@@ -50,7 +51,7 @@ GAChannel *ga_channel_new(GAChannelMethod method, const gchar *path,
 void ga_channel_free(GAChannel *c);
 GIOStatus ga_channel_read(GAChannel *c, gchar *buf, gsize size, gsize *count);
 GIOStatus ga_channel_write_all(GAChannel *c, const gchar *buf, gsize size);
-GAChannelMethod ga_channel_get_method(GAChannel *c);
-GAChannelType ga_channel_get_type(GAChannel *c);
-void ga_channel_set_sproc_array(GAChannel *c, GPtrArray *a);
+//GAChannelMethod ga_channel_get_method(GAChannel *c);
+//GAChannelType ga_channel_get_type(GAChannel *c);
+//void ga_channel_set_sproc_array(GAChannel *c, GPtrArray *a);
 #endif
