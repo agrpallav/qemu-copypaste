@@ -16,17 +16,6 @@
 
 #define GA_CHANNEL_BAUDRATE_DEFAULT B38400 /* for isa-serial channels */
 
-struct GAChannel {
-    GIOChannel *listen_channel;
-    GIOChannel *client_channel;
-    GAChannelMethod method;
-    GAChannelType type;
-    GAChannelCallback event_cb;
-    gpointer user_data;
-    GPtrArray *channel_sproc_array;
-    JSONMessageParser *parser;
-    guint id;
-};
 
 static int ga_channel_client_add(GAChannel *c, int fd);
 static GAChannel *ga_channel_copy(GAChannel *c);
@@ -318,9 +307,7 @@ static GAChannel *ga_channel_copy(GAChannel *c)
     n->user_data = c->user_data;
     n->channel_sproc_array = c->channel_sproc_array;
     
-    JSONMessageParser p;
-    json_message_parser_init(&p, c->emit);
-    n->parser = &p;
+    json_message_parser_init(&n->parser, c->parser.emit);
     return n;
 }
 
@@ -337,24 +324,4 @@ void ga_channel_free(GAChannel *c)
         g_ptr_array_remove(c->channel_sproc_array, c);
     }
     g_free(c);
-}
-
-GAChannelMethod ga_channel_get_method(GAChannel *c)
-{
-    return c->method;
-}
-
-GAChannelType ga_channel_get_type(GAChannel *c)
-{
-    return c->type;
-}
-
-void ga_channel_set_sproc_array(GAChannel *c, GPtrArray *a)
-{
-    c->channel_sproc_array = a;
-}
-
-JSONMessageParser *ga_channel_get_parser(GAChannel *c)
-{
-    return c->parser;
 }
