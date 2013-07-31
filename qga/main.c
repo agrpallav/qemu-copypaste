@@ -44,12 +44,12 @@
 #endif
 
 #ifndef _WIN32
-#define QGA_VIRTIO_PATH_DEFAULT "/dev/virtio-ports/org.qemu.guest_agent.0"
-#define QGA_SESSION_PATH_DEFAULT "/tmp/host_qga.sock"
-#define QGA_SPROC_PATH_DEFAULT "/tmp/sproc.sock"
+#define QGA_HOST_PATH_DEFAULT "/dev/virtio-ports/org.qemu.guest_agent.0"
+#define QGA_SESSION_HOST_PATH_DEFAULT "/tmp/host_qga.sock"
+#define QGA_SESSION_CLIENT_PATH_DEFAULT "/tmp/sproc.sock"
 #define QGA_STATE_RELATIVE_DIR  "run"
 #else
-#define QGA_VIRTIO_PATH_DEFAULT "\\\\.\\Global\\org.qemu.guest_agent.0"
+#define QGA_HOST_PATH_DEFAULT "\\\\.\\Global\\org.qemu.guest_agent.0"
 #define QGA_STATE_RELATIVE_DIR  "qemu-ga"
 #endif
 #ifdef CONFIG_FSFREEZE
@@ -71,7 +71,8 @@ struct GAState {
     //JSONMessageParser parser;
     GMainLoop *main_loop;
     GAChannel *channel_host;
-    GPtrArray *channel_sproc_array;
+    GAChannel *channel_session_host;
+    GPtrArray *channel_session_clients;
 //    bool virtio; /* fastpath to check for virtio to deal with poll() quirks */
     GACommandState *command_state;
     GLogLevelFlags log_level;
@@ -217,7 +218,7 @@ static void usage(const char *cmd)
 "  -h, --help        display this help and exit\n"
 "\n"
 "Report bugs to <mdroth@linux.vnet.ibm.com>\n"
-    , cmd, QEMU_VERSION, QGA_VIRTIO_PATH_DEFAULT, dfl_pathnames.pidfile,
+    , cmd, QEMU_VERSION, QGA_HOST_PATH_DEFAULT, dfl_pathnames.pidfile,
 #ifdef CONFIG_FSFREEZE
     QGA_FSFREEZE_HOOK_DEFAULT,
 #endif
@@ -520,6 +521,17 @@ fail:
 #endif
 }
 
+static GAChannel *gachannel_from_id(GPtrArray *ar, int sessionid)
+{
+    int i;
+    GAChannel *c;
+    for(i=0; i<ar->len; i++) {
+        c = (GAChannel *)g_ptr_array_index(ar, i);
+        if (c->id == sessionid) return c;
+    }
+    return NULL;
+}
+
 static int send_response(GAChannel *c, QObject *payload)
 {
     const char *buf;
@@ -575,10 +587,12 @@ static void process_command(GAChannel *c, QDict *req)
 static void process_event(JSONMessageParser *parser, QList *tokens)
 {
     GAChannel *c = container_of(parser, GAChannel, parser);
+    GAState *s = (GAState *)c->session;
+    GAChannel *channel_out;
     QObject *obj;
     QDict *qdict;
     Error *err = NULL;
-    int ret;
+    int ret,id;
 
     g_assert(c && parser);
 
@@ -603,9 +617,28 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
 
     /* handle host->guest commands */
     if (qdict_haskey(qdict, "execute")) {
-        process_command(c, qdict);
-    } else if (qdict_haskey(qdict,"return")) {
-        
+        if (c->type == GA_CHANNEL_SESSION_CLIENT) {
+            qdict_put_obj(qdict, "sessionid", QOBJECT(qint_from_int(c->id)));
+            ret = send_response(c, QOBJECT(qdict));
+            if (ret) {
+                g_warning("error sending error response: %s", strerror(ret));
+            }
+        } else {
+            process_command(c, qdict);
+        }
+    } else if (qdict_haskey(qdict,"return") && qdict_haskey(qdict,"sessionid")) {
+        id = qdict_get_int(qdict, "sessionid");
+        qdict_del(qdict, "sessionid");
+
+        channel_out = gachannel_from_id(s->channel_session_clients, id);
+        if (channel_out == NULL) {
+            g_warning("invalid session id, ignoring message");
+        }
+
+        ret = send_response(channel_out, QOBJECT(qdict));
+        if (ret) {
+            g_warning("error sending error response: %s", strerror(ret));
+        }
     } else {
         if (!qdict_haskey(qdict, "error")) {
             QDECREF(qdict);
@@ -621,7 +654,7 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
         }
     }
 
-    QDECREF(qdict);
+QDECREF(qdict);
 }
 
 /* false return signals GAChannel to close the current client connection */
@@ -642,7 +675,7 @@ static gboolean channel_event_cb(GIOCondition condition, gpointer data, GAChanne
         g_warning("error reading channel");
         return false;
     case G_IO_STATUS_NORMAL:
-        if (c->type == GA_CHANNEL_SPROC) {
+        if (c->type == GA_CHANNEL_SESSION_CLIENT) {
             buf[count]='\0';
             printf ("count: %lu, message: %s\n",count,buf);
         } else {
@@ -682,20 +715,24 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path,
     }
 
     if (path == NULL) {
-        if (strcmp(method, "virtio-serial") == 0) {
+        switch (channel_type) {
+        case GA_CHANNEL_HOST:
             /* try the default path for the virtio-serial port */
-            path = QGA_VIRTIO_PATH_DEFAULT;
-        }
-        else if (channel_type == GA_CHANNEL_SPROC) {
-            path = QGA_SPROC_PATH_DEFAULT;
-        } else {
+            path = QGA_HOST_PATH_DEFAULT;
+            break;
+        case GA_CHANNEL_SESSION_CLIENT:
+            path = QGA_SESSION_CLIENT_PATH_DEFAULT;
+            break;
+        case GA_CHANNEL_SESSION_HOST:
+            path = QGA_SESSION_HOST_PATH_DEFAULT;
+            break;
+        default:
             g_critical("must specify a path for this channel");
             return false;
         }
     }
 
     if (strcmp(method, "virtio-serial") == 0) {
-        // s->virtio = true; /* virtio requires special handling in some cases */
         channel_method = GA_CHANNEL_VIRTIO_SERIAL;
     } else if (strcmp(method, "isa-serial") == 0) {
         channel_method = GA_CHANNEL_ISA_SERIAL;
@@ -711,10 +748,10 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path,
         g_critical("failed to create guest agent channel: type %d",channel_type);
         return false;
     }
-    
-    if (channel_type == GA_CHANNEL_SPROC) {
-        channel->channel_sproc_array = s->channel_sproc_array;
-        g_ptr_array_add(s->channel_sproc_array, channel);
+
+    if (channel_type == GA_CHANNEL_SESSION_CLIENT) {
+        channel->channel_session_clients = s->channel_session_clients;
+        g_ptr_array_add(s->channel_session_clients, channel);
     } else {
         s->channel_host = channel;
     }
@@ -1177,7 +1214,7 @@ int main(int argc, char **argv)
     ga_command_state_init(s, s->command_state);
     ga_command_state_init_all(s->command_state);
     //json_message_parser_init(&s->parser, process_event);
-    s->channel_sproc_array = g_ptr_array_new();
+    s->channel_session_clients = g_ptr_array_new();
     ga_state = s;
 #ifndef _WIN32
     if (!register_signal_handlers()) {
@@ -1187,12 +1224,18 @@ int main(int argc, char **argv)
 #endif
 
     s->main_loop = g_main_loop_new(NULL, false);
+
     if (!channel_init(ga_state, method, path, GA_CHANNEL_HOST)) {
         g_critical("failed to initialize guest agent channel");
         goto out_bad;
     }
 
-    if (!channel_init(ga_state, "unix-listen", NULL, GA_CHANNEL_SPROC)) {
+    if (!channel_init(ga_state, "unix-listen", NULL, GA_CHANNEL_SESSION_CLIENT)) {
+        g_critical("failed to init the temp socket");
+        goto out_bad;
+    }
+
+    if (!channel_init(ga_state, "unix-listen", NULL, GA_CHANNEL_SESSION_HOST)) {
         g_critical("failed to init the temp socket");
         goto out_bad;
     }

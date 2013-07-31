@@ -44,10 +44,10 @@ static gboolean ga_channel_listen_accept(GIOChannel *channel,
         close(client_fd);
         goto out;
     }
-    if (c->type != GA_CHANNEL_SPROC) {
+    if (c->type != GA_CHANNEL_SESSION_CLIENT) {
         accepted = true;
     } else {
-        g_assert(c->channel_sproc_array);
+        g_assert(c->channel_session_clients);
     }
 
 out:
@@ -98,7 +98,7 @@ static gboolean ga_channel_client_event(GIOChannel *channel,
 
     g_assert(c);
     if (c->event_cb) {
-        client_cont = c->event_cb(condition, c->user_data, c);
+        client_cont = c->event_cb(condition, c->session, c);
         if (!client_cont) {
             ga_channel_client_close(c);
             if (c->id != 1) {
@@ -130,10 +130,10 @@ static int ga_channel_client_add(GAChannel *c, int fd)
 
 // Make a new GAChannel struct for each accepted connection
     if (c->client_channel != NULL) {
-        g_assert(c->type == GA_CHANNEL_SPROC);
+        g_assert(c->type == GA_CHANNEL_SESSION_CLIENT);
         c_new = ga_channel_copy(c);
-        g_assert(c->channel_sproc_array);
-        g_ptr_array_add(c_new->channel_sproc_array,c_new);
+        g_assert(c->channel_session_clients);
+        g_ptr_array_add(c_new->channel_session_clients,c_new);
         g_critical("here2");
     } else {
         c_new = c;
@@ -141,7 +141,7 @@ static int ga_channel_client_add(GAChannel *c, int fd)
     g_assert(c_new->id<=1);
 
 // id==1 is reserved for original listening GAChannel. It can accept a client but it is treated especially as it cannot be freed until the listener is closed.
-    if (c->type == GA_CHANNEL_SPROC && c_new->id != 1) {
+    if (c->type == GA_CHANNEL_SESSION_CLIENT && c_new->id != 1) {
         g_critical("assigning id: %d",counter);
         c_new->id = counter;
         counter++;
@@ -283,7 +283,7 @@ GAChannel *ga_channel_new(GAChannelMethod method, const gchar *path,
 {
     GAChannel *c = g_malloc0(sizeof(GAChannel));
     c->event_cb = cb;
-    c->user_data = opaque;
+    c->session = opaque;
     c->type = channel_type;
     c->client_channel = NULL;
     if (!ga_channel_open(c, path, method)) {
@@ -304,9 +304,8 @@ static GAChannel *ga_channel_copy(GAChannel *c)
     n->method = c->method;
     n->type = c->type;
     n->event_cb = c->event_cb;
-    n->user_data = c->user_data;
-    n->channel_sproc_array = c->channel_sproc_array;
-    
+    n->session = c->session;
+    n->channel_session_clients = c->channel_session_clients;
     json_message_parser_init(&n->parser, c->parser.emit);
     return n;
 }
@@ -320,8 +319,8 @@ void ga_channel_free(GAChannel *c)
     if (c->client_channel) {
         ga_channel_client_close(c);
     }
-    if (c->type == GA_CHANNEL_SPROC) {
-        g_ptr_array_remove(c->channel_sproc_array, c);
+    if (c->type == GA_CHANNEL_SESSION_CLIENT) {
+        g_ptr_array_remove(c->channel_session_clients, c);
     }
     g_free(c);
 }
