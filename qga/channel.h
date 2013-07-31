@@ -24,9 +24,9 @@ typedef enum {
 } GAChannelMethod;
 
 typedef enum {
-    GA_CHANNEL_HOST,       //To Qemu Host
-    GA_CHANNEL_SPROC,      //To Session PROCesses
-    GA_CHANNEL_HOST_RPC
+    GA_CHANNEL_HOST,                //To Qemu Host
+    GA_CHANNEL_SESSION_CLIENT,      //To Session Processes
+    GA_CHANNEL_SESSION_HOST         //To Qemu Host for session client communication
 } GAChannelType;
 
 typedef gboolean (*GAChannelCallback)(GIOCondition condition, gpointer opaque, GAChannel *channel);
@@ -38,8 +38,8 @@ struct GAChannel {
     GAChannelMethod method;
     GAChannelType type;
     GAChannelCallback event_cb;
-    gpointer user_data;
-    GPtrArray *channel_sproc_array;
+    gpointer session;
+    GPtrArray *channel_session_clients;
     JSONMessageParser parser;
     bool delimit_response;
     guint id;
@@ -51,7 +51,4 @@ GAChannel *ga_channel_new(GAChannelMethod method, const gchar *path,
 void ga_channel_free(GAChannel *c);
 GIOStatus ga_channel_read(GAChannel *c, gchar *buf, gsize size, gsize *count);
 GIOStatus ga_channel_write_all(GAChannel *c, const gchar *buf, gsize size);
-//GAChannelMethod ga_channel_get_method(GAChannel *c);
-//GAChannelType ga_channel_get_type(GAChannel *c);
-//void ga_channel_set_sproc_array(GAChannel *c, GPtrArray *a);
 #endif
