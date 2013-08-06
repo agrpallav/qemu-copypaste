@@ -32,17 +32,24 @@ typedef enum {
 typedef gboolean (*GAChannelCallback)(GIOCondition condition, gpointer opaque, GAChannel *channel);
 
 #ifndef _WIN32
-struct GAChannel {
+struct GAChannelListener {
     GIOChannel *listen_channel;
-    GIOChannel *client_channel;
     GAChannelMethod method;
     GAChannelType type;
     GAChannelCallback event_cb;
     gpointer session;
-    GPtrArray *channel_session_clients;
+
+    GPtrArray *channel_session_clients; //only used when type == SESSION_CLIENT
+    GASessionClient *client_channel; //used otherwise
+};
+
+struct GAChannelClient {
+    GIOChannel *client;
+    guint id;
     JSONMessageParser parser;
     bool delimit_response;
-    guint id;
+
+    GAChannelListener *listener;
 };
 #endif
 
