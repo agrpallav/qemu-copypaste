@@ -58,7 +58,6 @@ struct GAChannelClient {
 GAChannelListener *ga_channel_new(GAChannelMethod method, const gchar *path, GAChannelCallback cb,
                                   JSONMessageParserCallback jcb, GAChannelType channel_type);
 void ga_channel_listener_free(GAChannelListener *chl);
-//void ga_channel_client_free(GAChannelClient *chc);
 GIOStatus ga_channel_read(GAChannelClient *chc, gchar *buf, gsize size, gsize *count);
 GIOStatus ga_channel_write_all(GAChannelClient *chc, const gchar *buf, gsize size);
 #endif
