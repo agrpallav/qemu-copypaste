@@ -92,7 +92,6 @@ int cpu_get_pic_interrupt(CPUX86State *env)
 }
 #endif
 
-#if defined(CONFIG_USE_NPTL)
 /***********************************************************/
 /* Helper routines for implementing atomic operations.  */
 
@@ -120,15 +119,15 @@ void fork_end(int child)
     if (child) {
         /* Child processes created by fork() only have a single thread.
            Discard information about the parent threads.  */
-        first_cpu = thread_env;
-        thread_env->next_cpu = NULL;
+        first_cpu = thread_cpu;
+        first_cpu->next_cpu = NULL;
         pending_cpus = 0;
         pthread_mutex_init(&exclusive_lock, NULL);
         pthread_mutex_init(&cpu_list_mutex, NULL);
         pthread_cond_init(&exclusive_cond, NULL);
         pthread_cond_init(&exclusive_resume, NULL);
         pthread_mutex_init(&tcg_ctx.tb_ctx.tb_lock, NULL);
-        gdbserver_fork(thread_env);
+        gdbserver_fork((CPUArchState *)thread_cpu->env_ptr);
     } else {
         pthread_mutex_unlock(&exclusive_lock);
         pthread_mutex_unlock(&tcg_ctx.tb_ctx.tb_lock);
@@ -148,7 +147,6 @@ static inline void exclusive_idle(void)
    Must only be called from outside cpu_arm_exec.   */
 static inline void start_exclusive(void)
 {
-    CPUArchState *other;
     CPUState *other_cpu;
 
     pthread_mutex_lock(&exclusive_lock);
@@ -156,8 +154,7 @@ static inline void start_exclusive(void)
 
     pending_cpus = 1;
     /* Make all other cpus stop executing.  */
-    for (other = first_cpu; other; other = other->next_cpu) {
-        other_cpu = ENV_GET_CPU(other);
+    for (other_cpu = first_cpu; other_cpu; other_cpu = other_cpu->next_cpu) {
         if (other_cpu->running) {
             pending_cpus++;
             cpu_exit(other_cpu);
@@ -209,43 +206,6 @@ void cpu_list_unlock(void)
 {
     pthread_mutex_unlock(&cpu_list_mutex);
 }
-#else /* if !CONFIG_USE_NPTL */
-/* These are no-ops because we are not threadsafe.  */
-static inline void cpu_exec_start(CPUState *cpu)
-{
-}
-
-static inline void cpu_exec_end(CPUState *cpu)
-{
-}
-
-static inline void start_exclusive(void)
-{
-}
-
-static inline void end_exclusive(void)
-{
-}
-
-void fork_start(void)
-{
-}
-
-void fork_end(int child)
-{
-    if (child) {
-        gdbserver_fork(thread_env);
-    }
-}
-
-void cpu_list_lock(void)
-{
-}
-
-void cpu_list_unlock(void)
-{
-}
-#endif
 
 
 #ifdef TARGET_I386
@@ -314,6 +274,7 @@ static void set_idt(int n, unsigned int dpl)
 
 void cpu_loop(CPUX86State *env)
 {
+    CPUState *cs = CPU(x86_env_get_cpu(env));
     int trapnr;
     abi_ulong pc;
     target_siginfo_t info;
@@ -445,7 +406,7 @@ void cpu_loop(CPUX86State *env)
             {
                 int sig;
 
-                sig = gdb_handlesig (env, TARGET_SIGTRAP);
+                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
                 if (sig)
                   {
                     info.si_signo = sig;
@@ -877,7 +838,7 @@ void cpu_loop(CPUARMState *env)
             {
                 int sig;
 
-                sig = gdb_handlesig (env, TARGET_SIGTRAP);
+                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
                 if (sig)
                   {
                     info.si_signo = sig;
@@ -968,7 +929,7 @@ void cpu_loop(CPUUniCore32State *env)
             {
                 int sig;
 
-                sig = gdb_handlesig(env, TARGET_SIGTRAP);
+                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
                 if (sig) {
                     info.si_signo = sig;
                     info.si_errno = 0;
@@ -1235,7 +1196,7 @@ void cpu_loop (CPUSPARCState *env)
             {
                 int sig;
 
-                sig = gdb_handlesig (env, TARGET_SIGTRAP);
+                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
                 if (sig)
                   {
                     info.si_signo = sig;
@@ -1304,11 +1265,12 @@ int ppc_dcr_write (ppc_dcr_t *dcr_env, int dcrn, uint32_t val)
 
 #define EXCP_DUMP(env, fmt, ...)                                        \
 do {                                                                    \
+    CPUState *cs = ENV_GET_CPU(env);                                    \
     fprintf(stderr, fmt , ## __VA_ARGS__);                              \
-    cpu_dump_state(ENV_GET_CPU(env), stderr, fprintf, 0);               \
+    cpu_dump_state(cs, stderr, fprintf, 0);                             \
     qemu_log(fmt, ## __VA_ARGS__);                                      \
     if (qemu_log_enabled()) {                                           \
-        log_cpu_state(env, 0);                                          \
+        log_cpu_state(cs, 0);                                           \
     }                                                                   \
 } while (0)
 
@@ -1765,7 +1727,7 @@ void cpu_loop(CPUPPCState *env)
             {
                 int sig;
 
-                sig = gdb_handlesig(env, TARGET_SIGTRAP);
+                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
                 if (sig) {
                     info.si_signo = sig;
                     info.si_errno = 0;
@@ -1958,7 +1920,7 @@ static const uint8_t mips_syscall_args[] = {
 	MIPS_SYS(sys_sched_get_priority_min, 1)
 	MIPS_SYS(sys_sched_rr_get_interval, 2)	/* 4165 */
 	MIPS_SYS(sys_nanosleep,	2)
-	MIPS_SYS(sys_mremap	, 4)
+	MIPS_SYS(sys_mremap	, 5)
 	MIPS_SYS(sys_accept	, 3)
 	MIPS_SYS(sys_bind	, 3)
 	MIPS_SYS(sys_connect	, 3)	/* 4170 */
@@ -2029,7 +1991,7 @@ static const uint8_t mips_syscall_args[] = {
 	MIPS_SYS(sys_fremovexattr, 2)	/* 4235 */
 	MIPS_SYS(sys_tkill	, 2)
 	MIPS_SYS(sys_sendfile64	, 5)
-	MIPS_SYS(sys_futex	, 2)
+	MIPS_SYS(sys_futex	, 6)
 	MIPS_SYS(sys_sched_setaffinity, 3)
 	MIPS_SYS(sys_sched_getaffinity, 3)	/* 4240 */
 	MIPS_SYS(sys_io_setup	, 2)
@@ -2095,7 +2057,7 @@ static const uint8_t mips_syscall_args[] = {
 	MIPS_SYS(sys_pselect6, 6)
 	MIPS_SYS(sys_ppoll, 5)
 	MIPS_SYS(sys_unshare, 1)
-	MIPS_SYS(sys_splice, 4)
+	MIPS_SYS(sys_splice, 6)
 	MIPS_SYS(sys_sync_file_range, 7) /* 4305 */
 	MIPS_SYS(sys_tee, 4)
 	MIPS_SYS(sys_vmsplice, 4)
@@ -2316,7 +2278,7 @@ done_syscall:
             {
                 int sig;
 
-                sig = gdb_handlesig (env, TARGET_SIGTRAP);
+                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
                 if (sig)
                   {
                     info.si_signo = sig;
@@ -2349,7 +2311,31 @@ done_syscall:
                 abi_ulong trap_instr;
                 unsigned int code;
 
-                ret = get_user_ual(trap_instr, env->active_tc.PC);
+                if (env->hflags & MIPS_HFLAG_M16) {
+                    if (env->insn_flags & ASE_MICROMIPS) {
+                        /* microMIPS mode */
+                        abi_ulong instr[2];
+
+                        ret = get_user_u16(instr[0], env->active_tc.PC) ||
+                              get_user_u16(instr[1], env->active_tc.PC + 2);
+
+                        trap_instr = (instr[0] << 16) | instr[1];
+                    } else {
+                        /* MIPS16e mode */
+                        ret = get_user_u16(trap_instr, env->active_tc.PC);
+                        if (ret != 0) {
+                            goto error;
+                        }
+                        code = (trap_instr >> 6) & 0x3f;
+                        if (do_break(env, &info, code) != 0) {
+                            goto error;
+                        }
+                        break;
+                    }
+                } else {
+                    ret = get_user_ual(trap_instr, env->active_tc.PC);
+                }
+
                 if (ret != 0) {
                     goto error;
                 }
@@ -2373,14 +2359,30 @@ done_syscall:
                 abi_ulong trap_instr;
                 unsigned int code = 0;
 
-                ret = get_user_ual(trap_instr, env->active_tc.PC);
+                if (env->hflags & MIPS_HFLAG_M16) {
+                    /* microMIPS mode */
+                    abi_ulong instr[2];
+
+                    ret = get_user_u16(instr[0], env->active_tc.PC) ||
+                          get_user_u16(instr[1], env->active_tc.PC + 2);
+
+                    trap_instr = (instr[0] << 16) | instr[1];
+                } else {
+                    ret = get_user_ual(trap_instr, env->active_tc.PC);
+                }
+
                 if (ret != 0) {
                     goto error;
                 }
 
                 /* The immediate versions don't provide a code.  */
                 if (!(trap_instr & 0xFC000000)) {
-                    code = ((trap_instr >> 6) & ((1 << 10) - 1));
+                    if (env->hflags & MIPS_HFLAG_M16) {
+                        /* microMIPS mode */
+                        code = ((trap_instr >> 12) & ((1 << 4) - 1));
+                    } else {
+                        code = ((trap_instr >> 6) & ((1 << 10) - 1));
+                    }
                 }
 
                 if (do_break(env, &info, code) != 0) {
@@ -2476,7 +2478,7 @@ void cpu_loop(CPUOpenRISCState *env)
             break;
         }
         if (gdbsig) {
-            gdb_handlesig(env, gdbsig);
+            gdb_handlesig(cs, gdbsig);
             if (gdbsig != TARGET_SIGTRAP) {
                 exit(1);
             }
@@ -2519,7 +2521,7 @@ void cpu_loop(CPUSH4State *env)
             {
                 int sig;
 
-                sig = gdb_handlesig (env, TARGET_SIGTRAP);
+                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
                 if (sig)
                   {
                     info.si_signo = sig;
@@ -2587,7 +2589,7 @@ void cpu_loop(CPUCRISState *env)
             {
                 int sig;
 
-                sig = gdb_handlesig (env, TARGET_SIGTRAP);
+                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
                 if (sig)
                   {
                     info.si_signo = sig;
@@ -2687,7 +2689,7 @@ void cpu_loop(CPUMBState *env)
             {
                 int sig;
 
-                sig = gdb_handlesig (env, TARGET_SIGTRAP);
+                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
                 if (sig)
                   {
                     info.si_signo = sig;
@@ -2780,7 +2782,7 @@ void cpu_loop(CPUM68KState *env)
             {
                 int sig;
 
-                sig = gdb_handlesig (env, TARGET_SIGTRAP);
+                sig = gdb_handlesig(cs, TARGET_SIGTRAP);
                 if (sig)
                   {
                     info.si_signo = sig;
@@ -3007,7 +3009,7 @@ void cpu_loop(CPUAlphaState *env)
             }
             break;
         case EXCP_DEBUG:
-            info.si_signo = gdb_handlesig (env, TARGET_SIGTRAP);
+            info.si_signo = gdb_handlesig(cs, TARGET_SIGTRAP);
             if (info.si_signo) {
                 env->lock_addr = -1;
                 info.si_errno = 0;
@@ -3060,7 +3062,7 @@ void cpu_loop(CPUS390XState *env)
             break;
 
         case EXCP_DEBUG:
-            sig = gdb_handlesig(env, TARGET_SIGTRAP);
+            sig = gdb_handlesig(cs, TARGET_SIGTRAP);
             if (sig) {
                 n = TARGET_TRAP_BRKPT;
                 goto do_signal_pc;
@@ -3152,17 +3154,12 @@ void cpu_loop(CPUS390XState *env)
 
 #endif /* TARGET_S390X */
 
-THREAD CPUArchState *thread_env;
+THREAD CPUState *thread_cpu;
 
 void task_settid(TaskState *ts)
 {
     if (ts->ts_tid == 0) {
-#ifdef CONFIG_USE_NPTL
         ts->ts_tid = (pid_t)syscall(SYS_gettid);
-#else
-        /* when no threads are used, tid becomes pid */
-        ts->ts_tid = getpid();
-#endif
     }
 }
 
@@ -3542,6 +3539,7 @@ int main(int argc, char **argv, char **envp)
     struct linux_binprm bprm;
     TaskState *ts;
     CPUArchState *env;
+    CPUState *cpu;
     int optind;
     char **target_environ, **wrk;
     char **target_argv;
@@ -3638,11 +3636,10 @@ int main(int argc, char **argv, char **envp)
         fprintf(stderr, "Unable to find CPU definition\n");
         exit(1);
     }
-#if defined(TARGET_SPARC) || defined(TARGET_PPC)
-    cpu_reset(ENV_GET_CPU(env));
-#endif
+    cpu = ENV_GET_CPU(env);
+    cpu_reset(cpu);
 
-    thread_env = env;
+    thread_cpu = cpu;
 
     if (getenv("QEMU_STRACE")) {
         do_strace = 1;
@@ -4077,7 +4074,7 @@ int main(int argc, char **argv, char **envp)
                     gdbstub_port);
             exit(1);
         }
-        gdb_handlesig(env, 0);
+        gdb_handlesig(cpu, 0);
     }
     cpu_loop(env);
     /* never exits */

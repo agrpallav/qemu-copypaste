@@ -74,7 +74,7 @@ static void dec_21154_pci_bridge_class_init(ObjectClass *klass, void *data)
 
 static const TypeInfo dec_21154_pci_bridge_info = {
     .name          = "dec-21154-p2p-bridge",
-    .parent        = TYPE_PCI_DEVICE,
+    .parent        = TYPE_PCI_BRIDGE,
     .instance_size = sizeof(PCIBridge),
     .class_init    = dec_21154_pci_bridge_class_init,
 };
@@ -86,7 +86,7 @@ PCIBus *pci_dec_21154_init(PCIBus *parent_bus, int devfn)
 
     dev = pci_create_multifunction(parent_bus, devfn, false,
                                    "dec-21154-p2p-bridge");
-    br = DO_UPCAST(PCIBridge, dev, dev);
+    br = PCI_BRIDGE(dev);
     pci_bridge_map_irq(br, "DEC 21154 PCI-PCI bridge", dec_map_irq);
     qdev_init_nofail(&dev->qdev);
     return pci_bridge_get_sec_bus(br);
@@ -98,9 +98,9 @@ static int pci_dec_21154_device_init(SysBusDevice *dev)
 
     phb = PCI_HOST_BRIDGE(dev);
 
-    memory_region_init_io(&phb->conf_mem, &pci_host_conf_le_ops,
+    memory_region_init_io(&phb->conf_mem, OBJECT(dev), &pci_host_conf_le_ops,
                           dev, "pci-conf-idx", 0x1000);
-    memory_region_init_io(&phb->data_mem, &pci_host_data_le_ops,
+    memory_region_init_io(&phb->data_mem, OBJECT(dev), &pci_host_data_le_ops,
                           dev, "pci-data-idx", 0x1000);
     sysbus_init_mmio(dev, &phb->conf_mem);
     sysbus_init_mmio(dev, &phb->data_mem);

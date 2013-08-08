@@ -127,7 +127,7 @@ typedef struct ARMCPU {
 
 static inline ARMCPU *arm_env_get_cpu(CPUARMState *env)
 {
-    return ARM_CPU(container_of(env, ARMCPU, env));
+    return container_of(env, ARMCPU, env);
 }
 
 #define ENV_GET_CPU(e) CPU(arm_env_get_cpu(e))
@@ -146,5 +146,10 @@ void arm_v7m_cpu_do_interrupt(CPUState *cpu);
 
 void arm_cpu_dump_state(CPUState *cs, FILE *f, fprintf_function cpu_fprintf,
                         int flags);
+
+hwaddr arm_cpu_get_phys_page_debug(CPUState *cpu, vaddr addr);
+
+int arm_cpu_gdb_read_register(CPUState *cpu, uint8_t *buf, int reg);
+int arm_cpu_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg);
 
 #endif

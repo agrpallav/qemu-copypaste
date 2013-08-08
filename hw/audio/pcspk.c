@@ -167,7 +167,7 @@ static void pcspk_initfn(Object *obj)
 {
     PCSpkState *s = PC_SPEAKER(obj);
 
-    memory_region_init_io(&s->ioport, &pcspk_io_ops, s, "elcr", 1);
+    memory_region_init_io(&s->ioport, OBJECT(s), &pcspk_io_ops, s, "elcr", 1);
 }
 
 static void pcspk_realizefn(DeviceState *dev, Error **errp)
@@ -191,6 +191,7 @@ static void pcspk_class_initfn(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = pcspk_realizefn;
+    set_bit(DEVICE_CATEGORY_SOUND, dc->categories);
     dc->no_user = 1;
     dc->props = pcspk_properties;
 }

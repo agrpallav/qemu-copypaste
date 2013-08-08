@@ -531,14 +531,14 @@ ObjectClass *object_class_dynamic_cast_assert(ObjectClass *class,
 #ifdef CONFIG_QOM_CAST_DEBUG
     int i;
 
-    for (i = 0; i < OBJECT_CLASS_CAST_CACHE; i++) {
+    for (i = 0; class && i < OBJECT_CLASS_CAST_CACHE; i++) {
         if (class->cast_cache[i] == typename) {
             ret = class;
             goto out;
         }
     }
 #else
-    if (!class->interfaces) {
+    if (!class || !class->interfaces) {
         return class;
     }
 #endif
@@ -551,7 +551,7 @@ ObjectClass *object_class_dynamic_cast_assert(ObjectClass *class,
     }
 
 #ifdef CONFIG_QOM_CAST_DEBUG
-    if (ret == class) {
+    if (class && ret == class) {
         for (i = 1; i < OBJECT_CLASS_CAST_CACHE; i++) {
             class->cast_cache[i - 1] = class->cast_cache[i];
         }
@@ -683,16 +683,15 @@ GSList *object_class_get_list(const char *implements_type,
 
 void object_ref(Object *obj)
 {
-    obj->ref++;
+     atomic_inc(&obj->ref);
 }
 
 void object_unref(Object *obj)
 {
     g_assert(obj->ref > 0);
-    obj->ref--;
 
     /* parent always holds a reference to its children */
-    if (obj->ref == 0) {
+    if (atomic_fetch_dec(&obj->ref) == 1) {
         object_finalize(obj);
     }
 }

@@ -346,7 +346,8 @@ Send keys to VM.
 Arguments:
 
 keys array:
-    - "key": key sequence (a json-array of key enum values)
+    - "key": key sequence (a json-array of key union values,
+             union can be number or qcode enum)
 
 - hold-time: time to delay key up events, milliseconds. Defaults to 100
              (json-int, optional)
@@ -354,7 +355,9 @@ keys array:
 Example:
 
 -> { "execute": "send-key",
-     "arguments": { 'keys': [ 'ctrl', 'alt', 'delete' ] } }
+     "arguments": { "keys": [ { "type": "qcode", "data": "ctrl" },
+                              { "type": "qcode", "data": "alt" },
+                              { "type": "qcode", "data": "delete" } ] } }
 <- { "return": {} }
 
 EQMP
@@ -913,7 +916,7 @@ EQMP
 
     {
         .name       = "drive-backup",
-        .args_type  = "device:B,target:s,speed:i?,mode:s?,format:s?,"
+        .args_type  = "sync:s,device:B,target:s,speed:i?,mode:s?,format:s?,"
                       "on-source-error:s?,on-target-error:s?",
         .mhandler.cmd_new = qmp_marshal_input_drive_backup,
     },
@@ -939,6 +942,10 @@ Arguments:
 - "format": the format of the new destination, default is to probe if 'mode' is
             'existing', else the format of the source
             (json-string, optional)
+- "sync": what parts of the disk image should be copied to the destination;
+  possibilities include "full" for all the disk, "top" for only the sectors
+  allocated in the topmost image, or "none" to only replicate new I/O
+  (MirrorSyncMode).
 - "mode": whether and how QEMU should create a new image
           (NewImageMode, optional, default 'absolute-paths')
 - "speed": the maximum speed, in bytes per second (json-int, optional)
@@ -953,6 +960,7 @@ Arguments:
 
 Example:
 -> { "execute": "drive-backup", "arguments": { "device": "drive0",
+                                               "sync": "full",
                                                "target": "backup.img" } }
 <- { "return": {} }
 EQMP
@@ -3041,5 +3049,68 @@ Example:
 
 -> { "execute": "chardev-remove", "arguments": { "id" : "foo" } }
 <- { "return": {} }
+
+EQMP
+    {
+        .name       = "query-rx-filter",
+        .args_type  = "name:s?",
+        .mhandler.cmd_new = qmp_marshal_input_query_rx_filter,
+    },
+
+SQMP
+query-rx-filter
+---------------
+
+Show rx-filter information.
+
+Returns a json-array of rx-filter information for all NICs (or for the
+given NIC), returning an error if the given NIC doesn't exist, or
+given NIC doesn't support rx-filter querying, or given net client
+isn't a NIC.
+
+The query will clear the event notification flag of each NIC, then qemu
+will start to emit event to QMP monitor.
+
+Each array entry contains the following:
+
+- "name": net client name (json-string)
+- "promiscuous": promiscuous mode is enabled (json-bool)
+- "multicast": multicast receive state (one of 'normal', 'none', 'all')
+- "unicast": unicast receive state  (one of 'normal', 'none', 'all')
+- "broadcast-allowed": allow to receive broadcast (json-bool)
+- "multicast-overflow": multicast table is overflowed (json-bool)
+- "unicast-overflow": unicast table is overflowed (json-bool)
+- "main-mac": main macaddr string (json-string)
+- "vlan-table": a json-array of active vlan id
+- "unicast-table": a json-array of unicast macaddr string
+- "multicast-table": a json-array of multicast macaddr string
+
+Example:
+
+-> { "execute": "query-rx-filter", "arguments": { "name": "vnet0" } }
+<- { "return": [
+        {
+            "promiscuous": true,
+            "name": "vnet0",
+            "main-mac": "52:54:00:12:34:56",
+            "unicast": "normal",
+            "vlan-table": [
+                4,
+                0
+            ],
+            "unicast-table": [
+            ],
+            "multicast": "normal",
+            "multicast-overflow": false,
+            "unicast-overflow": false,
+            "multicast-table": [
+                "01:00:5e:00:00:01",
+                "33:33:00:00:00:01",
+                "33:33:ff:12:34:56"
+            ],
+            "broadcast-allowed": false
+        }
+      ]
+   }
 
 EQMP

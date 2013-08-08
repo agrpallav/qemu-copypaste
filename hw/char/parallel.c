@@ -587,7 +587,7 @@ bool parallel_mm_init(MemoryRegion *address_space,
     s->it_shift = it_shift;
     qemu_register_reset(parallel_reset, s);
 
-    memory_region_init_io(&s->iomem, &parallel_mm_ops, s,
+    memory_region_init_io(&s->iomem, NULL, &parallel_mm_ops, s,
                           "parallel", 8 << it_shift);
     memory_region_add_subregion(address_space, base, &s->iomem);
     return true;
@@ -607,6 +607,7 @@ static void parallel_isa_class_initfn(ObjectClass *klass, void *data)
 
     dc->realize = parallel_isa_realizefn;
     dc->props = parallel_isa_properties;
+    set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
 }
 
 static const TypeInfo parallel_isa_info = {

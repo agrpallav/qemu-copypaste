@@ -222,15 +222,23 @@ static gint cpreg_key_compare(gconstpointer a, gconstpointer b)
     return aidx - bidx;
 }
 
+static void cpreg_make_keylist(gpointer key, gpointer value, gpointer udata)
+{
+    GList **plist = udata;
+
+    *plist = g_list_prepend(*plist, key);
+}
+
 void init_cpreg_list(ARMCPU *cpu)
 {
     /* Initialise the cpreg_tuples[] array based on the cp_regs hash.
      * Note that we require cpreg_tuples[] to be sorted by key ID.
      */
-    GList *keys;
+    GList *keys = NULL;
     int arraylen;
 
-    keys = g_hash_table_get_keys(cpu->cp_regs);
+    g_hash_table_foreach(cpu->cp_regs, cpreg_make_keylist, &keys);
+
     keys = g_list_sort(keys, cpreg_key_compare);
 
     cpu->cpreg_array_len = 0;
@@ -891,6 +899,8 @@ static const ARMCPRegInfo pmsav5_cp_reginfo[] = {
 static int vmsa_ttbcr_raw_write(CPUARMState *env, const ARMCPRegInfo *ri,
                                 uint64_t value)
 {
+    int maskshift = extract32(value, 0, 3);
+
     if (arm_feature(env, ARM_FEATURE_LPAE)) {
         value &= ~((7 << 19) | (3 << 14) | (0xf << 3));
     } else {
@@ -902,8 +912,8 @@ static int vmsa_ttbcr_raw_write(CPUARMState *env, const ARMCPRegInfo *ri,
      * and the c2_mask and c2_base_mask values are meaningless.
      */
     env->cp15.c2_control = value;
-    env->cp15.c2_mask = ~(((uint32_t)0xffffffffu) >> value);
-    env->cp15.c2_base_mask = ~((uint32_t)0x3fffu >> value);
+    env->cp15.c2_mask = ~(((uint32_t)0xffffffffu) >> maskshift);
+    env->cp15.c2_base_mask = ~((uint32_t)0x3fffu >> maskshift);
     return 0;
 }
 
@@ -1378,9 +1388,6 @@ void register_cp_regs_for_features(ARMCPU *cpu)
     if (arm_feature(env, ARM_FEATURE_DUMMY_C15_REGS)) {
         define_arm_cp_regs(cpu, dummy_c15_cp_reginfo);
     }
-    if (arm_feature(env, ARM_FEATURE_MPIDR)) {
-        define_arm_cp_regs(cpu, mpidr_cp_reginfo);
-    }
     if (arm_feature(env, ARM_FEATURE_LPAE)) {
         define_arm_cp_regs(cpu, lpae_cp_reginfo);
     }
@@ -1393,12 +1400,17 @@ void register_cp_regs_for_features(ARMCPU *cpu)
             /* Note that the MIDR isn't a simple constant register because
              * of the TI925 behaviour where writes to another register can
              * cause the MIDR value to change.
+             *
+             * Unimplemented registers in the c15 0 0 0 space default to
+             * MIDR. Define MIDR first as this entire space, then CTR, TCMTR
+             * and friends override accordingly.
              */
             { .name = "MIDR",
-              .cp = 15, .crn = 0, .crm = 0, .opc1 = 0, .opc2 = 0,
+              .cp = 15, .crn = 0, .crm = 0, .opc1 = 0, .opc2 = CP_ANY,
               .access = PL1_R, .resetvalue = cpu->midr,
               .writefn = arm_cp_write_ignore, .raw_writefn = raw_write,
-              .fieldoffset = offsetof(CPUARMState, cp15.c0_cpuid) },
+              .fieldoffset = offsetof(CPUARMState, cp15.c0_cpuid),
+              .type = ARM_CP_OVERRIDE },
             { .name = "CTR",
               .cp = 15, .crn = 0, .crm = 0, .opc1 = 0, .opc2 = 1,
               .access = PL1_R, .type = ARM_CP_CONST, .resetvalue = cpu->ctr },
@@ -1435,21 +1447,20 @@ void register_cp_regs_for_features(ARMCPU *cpu)
             arm_feature(env, ARM_FEATURE_STRONGARM)) {
             ARMCPRegInfo *r;
             /* Register the blanket "writes ignored" value first to cover the
-             * whole space. Then define the specific ID registers, but update
-             * their access field to allow write access, so that they ignore
-             * writes rather than causing them to UNDEF.
+             * whole space. Then update the specific ID registers to allow write
+             * access, so that they ignore writes rather than causing them to
+             * UNDEF.
              */
             define_one_arm_cp_reg(cpu, &crn0_wi_reginfo);
             for (r = id_cp_reginfo; r->type != ARM_CP_SENTINEL; r++) {
                 r->access = PL1_RW;
-                define_one_arm_cp_reg(cpu, r);
             }
-        } else {
-            /* Just register the standard ID registers (read-only, meaning
-             * that writes will UNDEF).
-             */
-            define_arm_cp_regs(cpu, id_cp_reginfo);
         }
+        define_arm_cp_regs(cpu, id_cp_reginfo);
+    }
+
+    if (arm_feature(env, ARM_FEATURE_MPIDR)) {
+        define_arm_cp_regs(cpu, mpidr_cp_reginfo);
     }
 
     if (arm_feature(env, ARM_FEATURE_AUXCR)) {
@@ -1502,16 +1513,17 @@ ARMCPU *cpu_arm_init(const char *cpu_model)
 
 void arm_cpu_register_gdb_regs_for_features(ARMCPU *cpu)
 {
+    CPUState *cs = CPU(cpu);
     CPUARMState *env = &cpu->env;
 
     if (arm_feature(env, ARM_FEATURE_NEON)) {
-        gdb_register_coprocessor(env, vfp_gdb_get_reg, vfp_gdb_set_reg,
+        gdb_register_coprocessor(cs, vfp_gdb_get_reg, vfp_gdb_set_reg,
                                  51, "arm-neon.xml", 0);
     } else if (arm_feature(env, ARM_FEATURE_VFP3)) {
-        gdb_register_coprocessor(env, vfp_gdb_get_reg, vfp_gdb_set_reg,
+        gdb_register_coprocessor(cs, vfp_gdb_get_reg, vfp_gdb_set_reg,
                                  35, "arm-vfp3.xml", 0);
     } else if (arm_feature(env, ARM_FEATURE_VFP)) {
-        gdb_register_coprocessor(env, vfp_gdb_get_reg, vfp_gdb_set_reg,
+        gdb_register_coprocessor(cs, vfp_gdb_get_reg, vfp_gdb_set_reg,
                                  19, "arm-vfp.xml", 0);
     }
 }
@@ -1607,7 +1619,9 @@ void define_one_arm_cp_reg_with_opaque(ARMCPU *cpu,
                 ARMCPRegInfo *r2 = g_memdup(r, sizeof(ARMCPRegInfo));
                 int is64 = (r->type & ARM_CP_64BIT) ? 1 : 0;
                 *key = ENCODE_CP_REG(r->cp, is64, r->crn, crm, opc1, opc2);
-                r2->opaque = opaque;
+                if (opaque) {
+                    r2->opaque = opaque;
+                }
                 /* Make sure reginfo passed to helpers for wildcarded regs
                  * has the correct crm/opc1/opc2 for this reg, not CP_ANY:
                  */
@@ -1639,7 +1653,7 @@ void define_one_arm_cp_reg_with_opaque(ARMCPU *cpu,
                                 "was %s, now %s\n", r2->cp, 32 + 32 * is64,
                                 r2->crn, r2->crm, r2->opc1, r2->opc2,
                                 oldreg->name, r2->name);
-                        assert(0);
+                        g_assert_not_reached();
                     }
                 }
                 g_hash_table_insert(cpu->cp_regs, key, r2);
@@ -2749,17 +2763,19 @@ int cpu_arm_handle_mmu_fault (CPUARMState *env, target_ulong address,
     return 1;
 }
 
-hwaddr cpu_get_phys_page_debug(CPUARMState *env, target_ulong addr)
+hwaddr arm_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
 {
+    ARMCPU *cpu = ARM_CPU(cs);
     hwaddr phys_addr;
     target_ulong page_size;
     int prot;
     int ret;
 
-    ret = get_phys_addr(env, addr, 0, 0, &phys_addr, &prot, &page_size);
+    ret = get_phys_addr(&cpu->env, addr, 0, 0, &phys_addr, &prot, &page_size);
 
-    if (ret != 0)
+    if (ret != 0) {
         return -1;
+    }
 
     return phys_addr;
 }

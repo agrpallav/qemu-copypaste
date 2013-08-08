@@ -158,6 +158,17 @@ void tlb_reset_dirty_range(CPUTLBEntry *tlb_entry, uintptr_t start,
     }
 }
 
+static inline ram_addr_t qemu_ram_addr_from_host_nofail(void *ptr)
+{
+    ram_addr_t ram_addr;
+
+    if (qemu_ram_addr_from_host(ptr, &ram_addr) == NULL) {
+        fprintf(stderr, "Bad ram pointer %p\n", ptr);
+        abort();
+    }
+    return ram_addr;
+}
+
 static inline void tlb_update_dirty(CPUTLBEntry *tlb_entry)
 {
     ram_addr_t ram_addr;
@@ -175,11 +186,13 @@ static inline void tlb_update_dirty(CPUTLBEntry *tlb_entry)
 
 void cpu_tlb_reset_dirty_all(ram_addr_t start1, ram_addr_t length)
 {
+    CPUState *cpu;
     CPUArchState *env;
 
-    for (env = first_cpu; env != NULL; env = env->next_cpu) {
+    for (cpu = first_cpu; cpu != NULL; cpu = cpu->next_cpu) {
         int mmu_idx;
 
+        env = cpu->env_ptr;
         for (mmu_idx = 0; mmu_idx < NB_MMU_MODES; mmu_idx++) {
             unsigned int i;
 

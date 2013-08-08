@@ -105,18 +105,14 @@ int __clone2(int (*fn)(void *), void *child_stack_base,
 #include <linux/vt.h>
 #include <linux/dm-ioctl.h>
 #include <linux/reboot.h>
+#include <linux/route.h>
 #include "linux_loop.h"
 #include "cpu-uname.h"
 
 #include "qemu.h"
 
-#if defined(CONFIG_USE_NPTL)
 #define CLONE_NPTL_FLAGS2 (CLONE_SETTLS | \
     CLONE_PARENT_SETTID | CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID)
-#else
-/* XXX: Hardcode the above values.  */
-#define CLONE_NPTL_FLAGS2 0
-#endif
 
 //#define DEBUG
 
@@ -233,11 +229,9 @@ _syscall1(int,exit_group,int,error_code)
 #if defined(TARGET_NR_set_tid_address) && defined(__NR_set_tid_address)
 _syscall1(int,set_tid_address,int *,tidptr)
 #endif
-#if defined(CONFIG_USE_NPTL)
 #if defined(TARGET_NR_futex) && defined(__NR_futex)
 _syscall6(int,sys_futex,int *,uaddr,int,op,int,val,
           const struct timespec *,timeout,int *,uaddr2,int,val3)
-#endif
 #endif
 #define __NR_sys_sched_getaffinity __NR_sched_getaffinity
 _syscall3(int, sys_sched_getaffinity, pid_t, pid, unsigned int, len,
@@ -338,6 +332,7 @@ static int sys_openat(int dirfd, const char *pathname, int flags, mode_t mode)
 }
 #endif
 
+#ifdef TARGET_NR_utimensat
 #ifdef CONFIG_UTIMENSAT
 static int sys_utimensat(int dirfd, const char *pathname,
     const struct timespec times[2], int flags)
@@ -347,12 +342,19 @@ static int sys_utimensat(int dirfd, const char *pathname,
     else
         return utimensat(dirfd, pathname, times, flags);
 }
-#else
-#if defined(TARGET_NR_utimensat) && defined(__NR_utimensat)
+#elif defined(__NR_utimensat)
+#define __NR_sys_utimensat __NR_utimensat
 _syscall4(int,sys_utimensat,int,dirfd,const char *,pathname,
           const struct timespec *,tsp,int,flags)
+#else
+static int sys_utimensat(int dirfd, const char *pathname,
+                         const struct timespec times[2], int flags)
+{
+    errno = ENOSYS;
+    return -1;
+}
 #endif
-#endif /* CONFIG_UTIMENSAT  */
+#endif /* TARGET_NR_utimensat */
 
 #ifdef CONFIG_INOTIFY
 #include <sys/inotify.h>
@@ -1030,6 +1032,9 @@ static abi_long do_pipe(void *cpu_env, abi_ulong pipedes,
 #elif defined(TARGET_SH4)
         ((CPUSH4State*)cpu_env)->gregs[1] = host_pipe[1];
         return host_pipe[0];
+#elif defined(TARGET_SPARC)
+        ((CPUSPARCState*)cpu_env)->regwptr[1] = host_pipe[1];
+        return host_pipe[0];
 #endif
     }
 
@@ -1696,31 +1701,36 @@ static void unlock_iovec(struct iovec *vec, abi_ulong target_addr,
     free(vec);
 }
 
+static inline void target_to_host_sock_type(int *type)
+{
+    int host_type = 0;
+    int target_type = *type;
+
+    switch (target_type & TARGET_SOCK_TYPE_MASK) {
+    case TARGET_SOCK_DGRAM:
+        host_type = SOCK_DGRAM;
+        break;
+    case TARGET_SOCK_STREAM:
+        host_type = SOCK_STREAM;
+        break;
+    default:
+        host_type = target_type & TARGET_SOCK_TYPE_MASK;
+        break;
+    }
+    if (target_type & TARGET_SOCK_CLOEXEC) {
+        host_type |= SOCK_CLOEXEC;
+    }
+    if (target_type & TARGET_SOCK_NONBLOCK) {
+        host_type |= SOCK_NONBLOCK;
+    }
+    *type = host_type;
+}
+
 /* do_socket() Must return target values and target errnos. */
 static abi_long do_socket(int domain, int type, int protocol)
 {
-#if defined(TARGET_MIPS)
-    switch(type) {
-    case TARGET_SOCK_DGRAM:
-        type = SOCK_DGRAM;
-        break;
-    case TARGET_SOCK_STREAM:
-        type = SOCK_STREAM;
-        break;
-    case TARGET_SOCK_RAW:
-        type = SOCK_RAW;
-        break;
-    case TARGET_SOCK_RDM:
-        type = SOCK_RDM;
-        break;
-    case TARGET_SOCK_SEQPACKET:
-        type = SOCK_SEQPACKET;
-        break;
-    case TARGET_SOCK_PACKET:
-        type = SOCK_PACKET;
-        break;
-    }
-#endif
+    target_to_host_sock_type(&type);
+
     if (domain == PF_NETLINK)
         return -EAFNOSUPPORT; /* do not NETLINK socket connections possible */
     return get_errno(socket(domain, type, protocol));
@@ -1952,6 +1962,8 @@ static abi_long do_socketpair(int domain, int type, int protocol,
 {
     int tab[2];
     abi_long ret;
+
+    target_to_host_sock_type(&type);
 
     ret = get_errno(socketpair(domain, type, protocol, tab));
     if (!is_error(ret)) {
@@ -3551,6 +3563,69 @@ out:
     return ret;
 }
 
+static abi_long do_ioctl_rt(const IOCTLEntry *ie, uint8_t *buf_temp,
+                                int fd, abi_long cmd, abi_long arg)
+{
+    const argtype *arg_type = ie->arg_type;
+    const StructEntry *se;
+    const argtype *field_types;
+    const int *dst_offsets, *src_offsets;
+    int target_size;
+    void *argptr;
+    abi_ulong *target_rt_dev_ptr;
+    unsigned long *host_rt_dev_ptr;
+    abi_long ret;
+    int i;
+
+    assert(ie->access == IOC_W);
+    assert(*arg_type == TYPE_PTR);
+    arg_type++;
+    assert(*arg_type == TYPE_STRUCT);
+    target_size = thunk_type_size(arg_type, 0);
+    argptr = lock_user(VERIFY_READ, arg, target_size, 1);
+    if (!argptr) {
+        return -TARGET_EFAULT;
+    }
+    arg_type++;
+    assert(*arg_type == (int)STRUCT_rtentry);
+    se = struct_entries + *arg_type++;
+    assert(se->convert[0] == NULL);
+    /* convert struct here to be able to catch rt_dev string */
+    field_types = se->field_types;
+    dst_offsets = se->field_offsets[THUNK_HOST];
+    src_offsets = se->field_offsets[THUNK_TARGET];
+    for (i = 0; i < se->nb_fields; i++) {
+        if (dst_offsets[i] == offsetof(struct rtentry, rt_dev)) {
+            assert(*field_types == TYPE_PTRVOID);
+            target_rt_dev_ptr = (abi_ulong *)(argptr + src_offsets[i]);
+            host_rt_dev_ptr = (unsigned long *)(buf_temp + dst_offsets[i]);
+            if (*target_rt_dev_ptr != 0) {
+                *host_rt_dev_ptr = (unsigned long)lock_user_string(
+                                                  tswapal(*target_rt_dev_ptr));
+                if (!*host_rt_dev_ptr) {
+                    unlock_user(argptr, arg, 0);
+                    return -TARGET_EFAULT;
+                }
+            } else {
+                *host_rt_dev_ptr = 0;
+            }
+            field_types++;
+            continue;
+        }
+        field_types = thunk_convert(buf_temp + dst_offsets[i],
+                                    argptr + src_offsets[i],
+                                    field_types, THUNK_HOST);
+    }
+    unlock_user(argptr, arg, 0);
+
+    ret = get_errno(ioctl(fd, ie->host_cmd, buf_temp));
+    if (*host_rt_dev_ptr != 0) {
+        unlock_user((void *)*host_rt_dev_ptr,
+                    *target_rt_dev_ptr, 0);
+    }
+    return ret;
+}
+
 static IOCTLEntry ioctl_entries[] = {
 #define IOCTL(cmd, access, ...) \
     { TARGET_ ## cmd, cmd, #cmd, access, 0, {  __VA_ARGS__ } },
@@ -3976,7 +4051,7 @@ static abi_long do_modify_ldt(CPUX86State *env, int func, abi_ulong ptr,
 }
 
 #if defined(TARGET_I386) && defined(TARGET_ABI32)
-static abi_long do_set_thread_area(CPUX86State *env, abi_ulong ptr)
+abi_long do_set_thread_area(CPUX86State *env, abi_ulong ptr)
 {
     uint64_t *gdt_table = g2h(env->gdt.base);
     struct target_modify_ldt_ldt_s ldt_info;
@@ -4110,7 +4185,7 @@ static abi_long do_get_thread_area(CPUX86State *env, abi_ulong ptr)
 #endif /* TARGET_I386 && TARGET_ABI32 */
 
 #ifndef TARGET_ABI32
-static abi_long do_arch_prctl(CPUX86State *env, int code, abi_ulong addr)
+abi_long do_arch_prctl(CPUX86State *env, int code, abi_ulong addr)
 {
     abi_long ret = 0;
     abi_ulong val;
@@ -4148,7 +4223,6 @@ static abi_long do_arch_prctl(CPUX86State *env, int code, abi_ulong addr)
 
 #define NEW_STACK_SIZE 0x40000
 
-#if defined(CONFIG_USE_NPTL)
 
 static pthread_mutex_t clone_lock = PTHREAD_MUTEX_INITIALIZER;
 typedef struct {
@@ -4171,8 +4245,8 @@ static void *clone_func(void *arg)
 
     env = info->env;
     cpu = ENV_GET_CPU(env);
-    thread_env = env;
-    ts = (TaskState *)thread_env->opaque;
+    thread_cpu = cpu;
+    ts = (TaskState *)env->opaque;
     info->tid = gettid();
     cpu->host_tid = info->tid;
     task_settid(ts);
@@ -4193,16 +4267,6 @@ static void *clone_func(void *arg)
     /* never exits */
     return NULL;
 }
-#else
-
-static int clone_func(void *arg)
-{
-    CPUArchState *env = arg;
-    cpu_loop(env);
-    /* never exits */
-    return 0;
-}
-#endif
 
 /* do_fork() Must return host values and target errnos (unlike most
    do_*() functions). */
@@ -4213,12 +4277,8 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
     int ret;
     TaskState *ts;
     CPUArchState *new_env;
-#if defined(CONFIG_USE_NPTL)
     unsigned int nptl_flags;
     sigset_t sigmask;
-#else
-    uint8_t *new_stack;
-#endif
 
     /* Emulate vfork() with fork() */
     if (flags & CLONE_VFORK)
@@ -4226,23 +4286,18 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
 
     if (flags & CLONE_VM) {
         TaskState *parent_ts = (TaskState *)env->opaque;
-#if defined(CONFIG_USE_NPTL)
         new_thread_info info;
         pthread_attr_t attr;
-#endif
+
         ts = g_malloc0(sizeof(TaskState));
         init_task_state(ts);
         /* we create a new CPU instance. */
         new_env = cpu_copy(env);
-#if defined(TARGET_I386) || defined(TARGET_SPARC) || defined(TARGET_PPC)
-        cpu_reset(ENV_GET_CPU(new_env));
-#endif
         /* Init regs that differ from the parent.  */
         cpu_clone_regs(new_env, newsp);
         new_env->opaque = ts;
         ts->bprm = parent_ts->bprm;
         ts->info = parent_ts->info;
-#if defined(CONFIG_USE_NPTL)
         nptl_flags = flags;
         flags &= ~CLONE_NPTL_FLAGS2;
 
@@ -4292,17 +4347,6 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
         pthread_cond_destroy(&info.cond);
         pthread_mutex_destroy(&info.mutex);
         pthread_mutex_unlock(&clone_lock);
-#else
-        if (flags & CLONE_NPTL_FLAGS2)
-            return -EINVAL;
-        /* This is probably going to die very quickly, but do it anyway.  */
-        new_stack = g_malloc0 (NEW_STACK_SIZE);
-#ifdef __ia64__
-        ret = __clone2(clone_func, new_stack, NEW_STACK_SIZE, flags, new_env);
-#else
-	ret = clone(clone_func, new_stack + NEW_STACK_SIZE, flags, new_env);
-#endif
-#endif
     } else {
         /* if no CLONE_VM, we consider it is a fork */
         if ((flags & ~(CSIGNAL | CLONE_NPTL_FLAGS2)) != 0)
@@ -4313,7 +4357,6 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
             /* Child Process.  */
             cpu_clone_regs(env, newsp);
             fork_end(1);
-#if defined(CONFIG_USE_NPTL)
             /* There is a race condition here.  The parent process could
                theoretically read the TID in the child process before the child
                tid is set.  This would require using either ptrace
@@ -4329,7 +4372,6 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
                 cpu_set_tls (env, newtls);
             if (flags & CLONE_CHILD_CLEARTID)
                 ts->child_tidptr = child_tidptr;
-#endif
         } else {
             fork_end(0);
         }
@@ -4755,7 +4797,6 @@ static inline abi_long host_to_target_stat64(void *cpu_env,
 }
 #endif
 
-#if defined(CONFIG_USE_NPTL)
 /* ??? Using host futex calls even when target atomic operations
    are not really atomic probably breaks things.  However implementing
    futexes locally would make futexes shared between multiple processes
@@ -4807,7 +4848,6 @@ static int do_futex(target_ulong uaddr, int op, int val, target_ulong timeout,
         return -TARGET_ENOSYS;
     }
 }
-#endif
 
 /* Map host to target signal numbers for the wait family of syscalls.
    Assume all other status bits are the same.  */
@@ -4973,6 +5013,30 @@ static int open_self_auxv(void *cpu_env, int fd)
     return 0;
 }
 
+static int is_proc_myself(const char *filename, const char *entry)
+{
+    if (!strncmp(filename, "/proc/", strlen("/proc/"))) {
+        filename += strlen("/proc/");
+        if (!strncmp(filename, "self/", strlen("self/"))) {
+            filename += strlen("self/");
+        } else if (*filename >= '1' && *filename <= '9') {
+            char myself[80];
+            snprintf(myself, sizeof(myself), "%d/", getpid());
+            if (!strncmp(filename, myself, strlen(myself))) {
+                filename += strlen(myself);
+            } else {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+        if (!strcmp(filename, entry)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int do_open(void *cpu_env, const char *pathname, int flags, mode_t mode)
 {
     struct fake_open {
@@ -4981,15 +5045,14 @@ static int do_open(void *cpu_env, const char *pathname, int flags, mode_t mode)
     };
     const struct fake_open *fake_open;
     static const struct fake_open fakes[] = {
-        { "/proc/self/maps", open_self_maps },
-        { "/proc/self/stat", open_self_stat },
-        { "/proc/self/auxv", open_self_auxv },
+        { "maps", open_self_maps },
+        { "stat", open_self_stat },
+        { "auxv", open_self_auxv },
         { NULL, NULL }
     };
 
     for (fake_open = fakes; fake_open->filename; fake_open++) {
-        if (!strncmp(pathname, fake_open->filename,
-                     strlen(fake_open->filename))) {
+        if (is_proc_myself(pathname, fake_open->filename)) {
             break;
         }
     }
@@ -5030,6 +5093,7 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
                     abi_long arg5, abi_long arg6, abi_long arg7,
                     abi_long arg8)
 {
+    CPUState *cpu = ENV_GET_CPU(cpu_env);
     abi_long ret;
     struct stat st;
     struct statfs stfs;
@@ -5043,44 +5107,43 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 
     switch(num) {
     case TARGET_NR_exit:
-#ifdef CONFIG_USE_NPTL
-      /* In old applications this may be used to implement _exit(2).
-         However in threaded applictions it is used for thread termination,
-         and _exit_group is used for application termination.
-         Do thread termination if we have more then one thread.  */
-      /* FIXME: This probably breaks if a signal arrives.  We should probably
-         be disabling signals.  */
-      if (first_cpu->next_cpu) {
-          TaskState *ts;
-          CPUArchState **lastp;
-          CPUArchState *p;
+        /* In old applications this may be used to implement _exit(2).
+           However in threaded applictions it is used for thread termination,
+           and _exit_group is used for application termination.
+           Do thread termination if we have more then one thread.  */
+        /* FIXME: This probably breaks if a signal arrives.  We should probably
+           be disabling signals.  */
+        if (first_cpu->next_cpu) {
+            TaskState *ts;
+            CPUState **lastp;
+            CPUState *p;
 
-          cpu_list_lock();
-          lastp = &first_cpu;
-          p = first_cpu;
-          while (p && p != (CPUArchState *)cpu_env) {
-              lastp = &p->next_cpu;
-              p = p->next_cpu;
-          }
-          /* If we didn't find the CPU for this thread then something is
-             horribly wrong.  */
-          if (!p)
-              abort();
-          /* Remove the CPU from the list.  */
-          *lastp = p->next_cpu;
-          cpu_list_unlock();
-          ts = ((CPUArchState *)cpu_env)->opaque;
-          if (ts->child_tidptr) {
-              put_user_u32(0, ts->child_tidptr);
-              sys_futex(g2h(ts->child_tidptr), FUTEX_WAKE, INT_MAX,
-                        NULL, NULL, 0);
-          }
-          thread_env = NULL;
-          object_unref(OBJECT(ENV_GET_CPU(cpu_env)));
-          g_free(ts);
-          pthread_exit(NULL);
-      }
-#endif
+            cpu_list_lock();
+            lastp = &first_cpu;
+            p = first_cpu;
+            while (p && p != cpu) {
+                lastp = &p->next_cpu;
+                p = p->next_cpu;
+            }
+            /* If we didn't find the CPU for this thread then something is
+               horribly wrong.  */
+            if (!p) {
+                abort();
+            }
+            /* Remove the CPU from the list.  */
+            *lastp = p->next_cpu;
+            cpu_list_unlock();
+            ts = ((CPUArchState *)cpu_env)->opaque;
+            if (ts->child_tidptr) {
+                put_user_u32(0, ts->child_tidptr);
+                sys_futex(g2h(ts->child_tidptr), FUTEX_WAKE, INT_MAX,
+                          NULL, NULL, 0);
+            }
+            thread_cpu = NULL;
+            object_unref(OBJECT(ENV_GET_CPU(cpu_env)));
+            g_free(ts);
+            pthread_exit(NULL);
+        }
 #ifdef TARGET_GPROF
         _mcleanup();
 #endif
@@ -6262,20 +6325,18 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 #endif
     case TARGET_NR_readlink:
         {
-            void *p2, *temp;
+            void *p2;
             p = lock_user_string(arg1);
             p2 = lock_user(VERIFY_WRITE, arg2, arg3, 0);
-            if (!p || !p2)
+            if (!p || !p2) {
                 ret = -TARGET_EFAULT;
-            else {
-                if (strncmp((const char *)p, "/proc/self/exe", 14) == 0) {
-                    char real[PATH_MAX];
-                    temp = realpath(exec_path,real);
-                    ret = (temp==NULL) ? get_errno(-1) : strlen(real) ;
-                    snprintf((char *)p2, arg3, "%s", real);
-                    }
-                else
-                    ret = get_errno(readlink(path(p), p2, arg3));
+            } else if (is_proc_myself((const char *)p, "exe")) {
+                char real[PATH_MAX], *temp;
+                temp = realpath(exec_path, real);
+                ret = temp == NULL ? get_errno(-1) : strlen(real) ;
+                snprintf((char *)p2, arg3, "%s", real);
+            } else {
+                ret = get_errno(readlink(path(p), p2, arg3));
             }
             unlock_user(p2, arg2, ret);
             unlock_user(p, arg1, 0);
@@ -6287,10 +6348,16 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
             void *p2;
             p  = lock_user_string(arg2);
             p2 = lock_user(VERIFY_WRITE, arg3, arg4, 0);
-            if (!p || !p2)
-        	ret = -TARGET_EFAULT;
-            else
+            if (!p || !p2) {
+                ret = -TARGET_EFAULT;
+            } else if (is_proc_myself((const char *)p, "exe")) {
+                char real[PATH_MAX], *temp;
+                temp = realpath(exec_path, real);
+                ret = temp == NULL ? get_errno(-1) : strlen(real) ;
+                snprintf((char *)p2, arg4, "%s", real);
+            } else {
                 ret = get_errno(readlinkat(arg1, path(p), p2, arg4));
+            }
             unlock_user(p2, arg3, ret);
             unlock_user(p, arg2, 0);
         }
@@ -6846,16 +6913,20 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
         ret = get_errno(fsync(arg1));
         break;
     case TARGET_NR_clone:
-#if defined(TARGET_SH4) || defined(TARGET_ALPHA)
-        ret = get_errno(do_fork(cpu_env, arg1, arg2, arg3, arg5, arg4));
-#elif defined(TARGET_CRIS)
-        ret = get_errno(do_fork(cpu_env, arg2, arg1, arg3, arg4, arg5));
-#elif defined(TARGET_MICROBLAZE)
+        /* Linux manages to have three different orderings for its
+         * arguments to clone(); the BACKWARDS and BACKWARDS2 defines
+         * match the kernel's CONFIG_CLONE_* settings.
+         * Microblaze is further special in that it uses a sixth
+         * implicit argument to clone for the TLS pointer.
+         */
+#if defined(TARGET_MICROBLAZE)
         ret = get_errno(do_fork(cpu_env, arg1, arg2, arg4, arg6, arg5));
-#elif defined(TARGET_S390X)
+#elif defined(TARGET_CLONE_BACKWARDS)
+        ret = get_errno(do_fork(cpu_env, arg1, arg2, arg3, arg4, arg5));
+#elif defined(TARGET_CLONE_BACKWARDS2)
         ret = get_errno(do_fork(cpu_env, arg2, arg1, arg3, arg5, arg4));
 #else
-        ret = get_errno(do_fork(cpu_env, arg1, arg2, arg3, arg4, arg5));
+        ret = get_errno(do_fork(cpu_env, arg1, arg2, arg3, arg5, arg4));
 #endif
         break;
 #ifdef __NR_exit_group
@@ -8448,6 +8519,13 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 #elif defined(TARGET_I386) && defined(TARGET_ABI32)
       ret = do_set_thread_area(cpu_env, arg1);
       break;
+#elif defined(TARGET_M68K)
+      {
+          TaskState *ts = ((CPUArchState *)cpu_env)->opaque;
+          ts->tp_value = arg1;
+          ret = 0;
+          break;
+      }
 #else
       goto unimplemented_nowarn;
 #endif
@@ -8456,6 +8534,13 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
     case TARGET_NR_get_thread_area:
 #if defined(TARGET_I386) && defined(TARGET_ABI32)
         ret = do_get_thread_area(cpu_env, arg1);
+        break;
+#elif defined(TARGET_M68K)
+        {
+            TaskState *ts = ((CPUArchState *)cpu_env)->opaque;
+            ret = ts->tp_value;
+            break;
+        }
 #else
         goto unimplemented_nowarn;
 #endif
@@ -8536,7 +8621,7 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
         goto unimplemented_nowarn;
 #endif
 
-#if defined(TARGET_NR_utimensat) && defined(__NR_utimensat)
+#if defined(TARGET_NR_utimensat)
     case TARGET_NR_utimensat:
         {
             struct timespec *tsp, ts[2];
@@ -8560,11 +8645,9 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
         }
 	break;
 #endif
-#if defined(CONFIG_USE_NPTL)
     case TARGET_NR_futex:
         ret = do_futex(arg1, arg2, arg3, arg4, arg5, arg6);
         break;
-#endif
 #if defined(TARGET_NR_inotify_init) && defined(__NR_inotify_init)
     case TARGET_NR_inotify_init:
         ret = get_errno(sys_inotify_init());

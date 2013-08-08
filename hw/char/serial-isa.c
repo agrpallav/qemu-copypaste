@@ -72,7 +72,7 @@ static void serial_isa_realizefn(DeviceState *dev, Error **errp)
     serial_realize_core(s, errp);
     qdev_set_legacy_instance_id(dev, isa->iobase, 3);
 
-    memory_region_init_io(&s->io, &serial_io_ops, s, "serial", 8);
+    memory_region_init_io(&s->io, OBJECT(isa), &serial_io_ops, s, "serial", 8);
     isa_register_ioport(isadev, &s->io, isa->iobase);
 }
 
@@ -102,6 +102,7 @@ static void serial_isa_class_initfn(ObjectClass *klass, void *data)
     dc->realize = serial_isa_realizefn;
     dc->vmsd = &vmstate_isa_serial;
     dc->props = serial_isa_properties;
+    set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
 }
 
 static const TypeInfo serial_isa_info = {

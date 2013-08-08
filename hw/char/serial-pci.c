@@ -63,7 +63,7 @@ static int serial_pci_init(PCIDevice *dev)
     pci->dev.config[PCI_INTERRUPT_PIN] = 0x01;
     s->irq = pci->dev.irq[0];
 
-    memory_region_init_io(&s->io, &serial_io_ops, s, "serial", 8);
+    memory_region_init_io(&s->io, OBJECT(pci), &serial_io_ops, s, "serial", 8);
     pci_register_bar(&pci->dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &s->io);
     return 0;
 }
@@ -102,7 +102,7 @@ static int multi_serial_pci_init(PCIDevice *dev)
     assert(pci->ports <= PCI_SERIAL_MAX_PORTS);
 
     pci->dev.config[PCI_INTERRUPT_PIN] = 0x01;
-    memory_region_init(&pci->iobar, "multiserial", 8 * pci->ports);
+    memory_region_init(&pci->iobar, OBJECT(pci), "multiserial", 8 * pci->ports);
     pci_register_bar(&pci->dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &pci->iobar);
     pci->irqs = qemu_allocate_irqs(multi_serial_irq_mux, pci,
                                    pci->ports);
@@ -118,7 +118,8 @@ static int multi_serial_pci_init(PCIDevice *dev)
         }
         s->irq = pci->irqs[i];
         pci->name[i] = g_strdup_printf("uart #%d", i+1);
-        memory_region_init_io(&s->io, &serial_io_ops, s, pci->name[i], 8);
+        memory_region_init_io(&s->io, OBJECT(pci), &serial_io_ops, s,
+                              pci->name[i], 8);
         memory_region_add_subregion(&pci->iobar, 8 * i, &s->io);
     }
     return 0;
@@ -204,6 +205,7 @@ static void serial_pci_class_initfn(ObjectClass *klass, void *data)
     pc->class_id = PCI_CLASS_COMMUNICATION_SERIAL;
     dc->vmsd = &vmstate_pci_serial;
     dc->props = serial_pci_properties;
+    set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
 }
 
 static void multi_2x_serial_pci_class_initfn(ObjectClass *klass, void *data)
@@ -218,6 +220,7 @@ static void multi_2x_serial_pci_class_initfn(ObjectClass *klass, void *data)
     pc->class_id = PCI_CLASS_COMMUNICATION_SERIAL;
     dc->vmsd = &vmstate_pci_multi_serial;
     dc->props = multi_2x_serial_pci_properties;
+    set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
 }
 
 static void multi_4x_serial_pci_class_initfn(ObjectClass *klass, void *data)
@@ -232,6 +235,7 @@ static void multi_4x_serial_pci_class_initfn(ObjectClass *klass, void *data)
     pc->class_id = PCI_CLASS_COMMUNICATION_SERIAL;
     dc->vmsd = &vmstate_pci_multi_serial;
     dc->props = multi_4x_serial_pci_properties;
+    set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
 }
 
 static const TypeInfo serial_pci_info = {

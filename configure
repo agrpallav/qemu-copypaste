@@ -155,7 +155,6 @@ curl=""
 curses=""
 docs=""
 fdt=""
-nptl=""
 pixman=""
 sdl=""
 virtfs=""
@@ -180,6 +179,7 @@ xfs=""
 vhost_net="no"
 vhost_scsi="no"
 kvm="no"
+rdma=""
 gprof="no"
 debug_tcg="no"
 debug="no"
@@ -231,12 +231,13 @@ libusb=""
 usb_redir=""
 glx=""
 zlib="yes"
-guest_agent="yes"
+guest_agent=""
 want_tools="yes"
 libiscsi=""
 coroutine=""
 seccomp=""
 glusterfs=""
+glusterfs_discard="no"
 virtio_blk_data_plane=""
 gtk=""
 gtkabi="2.0"
@@ -854,10 +855,6 @@ for opt do
   ;;
   --enable-fdt) fdt="yes"
   ;;
-  --disable-nptl) nptl="no"
-  ;;
-  --enable-nptl) nptl="yes"
-  ;;
   --enable-mixemu) mixemu="yes"
   ;;
   --disable-linux-aio) linux_aio="no"
@@ -935,6 +932,10 @@ for opt do
   --disable-gtk) gtk="no"
   ;;
   --enable-gtk) gtk="yes"
+  ;;
+  --enable-rdma) rdma="yes"
+  ;;
+  --disable-rdma) rdma="no"
   ;;
   --with-gtkabi=*) gtkabi="$optarg"
   ;;
@@ -1094,9 +1095,9 @@ echo "  --enable-bluez           enable bluez stack connectivity"
 echo "  --disable-slirp          disable SLIRP userspace network connectivity"
 echo "  --disable-kvm            disable KVM acceleration support"
 echo "  --enable-kvm             enable KVM acceleration support"
+echo "  --disable-rdma           disable RDMA-based migration support"
+echo "  --enable-rdma            enable RDMA-based migration support"
 echo "  --enable-tcg-interpreter enable TCG with bytecode interpreter (TCI)"
-echo "  --disable-nptl           disable usermode NPTL support"
-echo "  --enable-nptl            enable usermode NPTL support"
 echo "  --enable-system          enable all system emulation targets"
 echo "  --disable-system         disable all system emulation targets"
 echo "  --enable-user            enable supported user emulation targets"
@@ -1431,7 +1432,7 @@ fi
 ##########################################
 # NPTL probe
 
-if test "$nptl" != "no" ; then
+if test "$linux_user" = "yes"; then
   cat > $TMPC <<EOF
 #include <sched.h>
 #include <linux/futex.h>
@@ -1442,14 +1443,8 @@ int main(void) {
   return 0;
 }
 EOF
-
-  if compile_object ; then
-    nptl=yes
-  else
-    if test "$nptl" = "yes" ; then
-      feature_not_found "nptl"
-    fi
-    nptl=no
+  if ! compile_object ; then
+    feature_not_found "nptl"
   fi
 fi
 
@@ -1474,7 +1469,7 @@ libs_softmmu="$libs_softmmu -lz"
 # libseccomp check
 
 if test "$seccomp" != "no" ; then
-    if $pkg_config --atleast-version=1.0.0 libseccomp --modversion >/dev/null 2>&1; then
+    if $pkg_config --atleast-version=2.1.0 libseccomp --modversion >/dev/null 2>&1; then
         libs_softmmu="$libs_softmmu `$pkg_config --libs libseccomp`"
         QEMU_CFLAGS="$QEMU_CFLAGS `$pkg_config --cflags libseccomp`"
 	seccomp="yes"
@@ -1697,19 +1692,23 @@ if test "$gtk" != "no"; then
       vtepackage="vte"
       vteversion="0.24.0"
     fi
-    if $pkg_config --exists "$gtkpackage >= $gtkversion" && \
-       $pkg_config --exists "$vtepackage >= $vteversion"; then
+    if ! $pkg_config --exists "$gtkpackage >= $gtkversion"; then
+        if test "$gtk" = "yes" ; then
+            feature_not_found "gtk"
+        fi
+        gtk="no"
+    elif ! $pkg_config --exists "$vtepackage >= $vteversion"; then
+        if test "$gtk" = "yes" ; then
+            error_exit "libvte not found (required for gtk support)"
+        fi
+        gtk="no"
+    else
 	gtk_cflags=`$pkg_config --cflags $gtkpackage 2>/dev/null`
 	gtk_libs=`$pkg_config --libs $gtkpackage 2>/dev/null`
 	vte_cflags=`$pkg_config --cflags $vtepackage 2>/dev/null`
 	vte_libs=`$pkg_config --libs $vtepackage 2>/dev/null`
 	libs_softmmu="$gtk_libs $vte_libs $libs_softmmu"
 	gtk="yes"
-    else
-	if test "$gtk" = "yes" ; then
-	    feature_not_found "gtk"
-	fi
-	gtk="no"
     fi
 fi
 
@@ -1794,6 +1793,30 @@ EOF
     sdl_libs="$sdl_libs -lX11"
   fi
   libs_softmmu="$sdl_libs $libs_softmmu"
+fi
+
+##########################################
+# RDMA needs OpenFabrics libraries
+if test "$rdma" != "no" ; then
+  cat > $TMPC <<EOF
+#include <rdma/rdma_cma.h>
+int main(void) { return 0; }
+EOF
+  rdma_libs="-lrdmacm -libverbs"
+  if compile_prog "" "$rdma_libs" ; then
+    rdma="yes"
+    libs_softmmu="$libs_softmmu $rdma_libs"
+  else
+    if test "$rdma" = "yes" ; then
+        error_exit \
+            " OpenFabrics librdmacm/libibverbs not present." \
+            " Your options:" \
+            "  (1) Fast: Install infiniband packages from your distro." \
+            "  (2) Cleanest: Install libraries from www.openfabrics.org" \
+            "  (3) Also: Install softiwarp if you don't have RDMA hardware"
+    fi
+    rdma="no"
+  fi
 fi
 
 ##########################################
@@ -2566,23 +2589,21 @@ fi
 ##########################################
 # glusterfs probe
 if test "$glusterfs" != "no" ; then
-  cat > $TMPC <<EOF
-#include <glusterfs/api/glfs.h>
-int main(void) {
-    (void) glfs_new("volume");
-    return 0;
-}
-EOF
-  glusterfs_libs="-lgfapi -lgfrpc -lgfxdr"
-  if compile_prog "" "$glusterfs_libs" ; then
-    glusterfs=yes
+  if $pkg_config --atleast-version=3 glusterfs-api >/dev/null 2>&1; then
+    glusterfs="yes"
+    glusterfs_cflags=`$pkg_config --cflags glusterfs-api 2>/dev/null`
+    glusterfs_libs=`$pkg_config --libs glusterfs-api 2>/dev/null`
+    CFLAGS="$CFLAGS $glusterfs_cflags"
     libs_tools="$glusterfs_libs $libs_tools"
     libs_softmmu="$glusterfs_libs $libs_softmmu"
+    if $pkg_config --atleast-version=5 glusterfs-api >/dev/null 2>&1; then
+      glusterfs_discard="yes"
+    fi
   else
     if test "$glusterfs" = "yes" ; then
       feature_not_found "GlusterFS backend support"
     fi
-    glusterfs=no
+    glusterfs="no"
   fi
 fi
 
@@ -3423,10 +3444,15 @@ if test "$softmmu" = yes ; then
       virtfs=no
     fi
   fi
+fi
+if [ "$guest_agent" != "no" ]; then
   if [ "$linux" = "yes" -o "$bsd" = "yes" -o "$solaris" = "yes" ] ; then
-    if [ "$guest_agent" = "yes" ]; then
       tools="qemu-ga\$(EXESUF) $tools"
-    fi
+      guest_agent=yes
+  elif [ "$guest_agent" != yes ]; then
+      guest_agent=no
+  else
+      error_exit "Guest agent is not supported on this platform"
   fi
 fi
 
@@ -3443,6 +3469,36 @@ fi
 
 if test "$cpu" = "s390x" ; then
   roms="$roms s390-ccw"
+fi
+
+# Probe for the need for relocating the user-only binary.
+if test "$pie" = "no" ; then
+  textseg_addr=
+  case "$cpu" in
+    arm | hppa | i386 | m68k | ppc | ppc64 | s390* | sparc | sparc64 | x86_64)
+      textseg_addr=0x60000000
+      ;;
+    mips)
+      textseg_addr=0x400000
+      ;;
+  esac
+  if [ -n "$textseg_addr" ]; then
+    cat > $TMPC <<EOF
+    int main(void) { return 0; }
+EOF
+    textseg_ldflags="-Wl,-Ttext-segment=$textseg_addr"
+    if ! compile_prog "" "$textseg_ldflags"; then
+      # In case ld does not support -Ttext-segment, edit the default linker
+      # script via sed to set the .text start addr.  This is needed on FreeBSD
+      # at least.
+      $ld --verbose | sed \
+        -e '1,/==================================================/d' \
+        -e '/==================================================/,$d' \
+        -e "s/[.] = [0-9a-fx]* [+] SIZEOF_HEADERS/. = $textseg_addr + SIZEOF_HEADERS/" \
+        -e "s/__executable_start = [0-9a-fx]*/__executable_start = $textseg_addr/" > config-host.ld
+      textseg_ldflags="-Wl,-T../config-host.ld"
+    fi
+  fi
 fi
 
 # add pixman flags after all config tests are done
@@ -3517,7 +3573,6 @@ echo "bluez  support    $bluez"
 echo "Documentation     $docs"
 [ ! -z "$uname_release" ] && \
 echo "uname -r          $uname_release"
-echo "NPTL support      $nptl"
 echo "GUEST_BASE        $guest_base"
 echo "PIE               $pie"
 echo "vde support       $vde"
@@ -3525,6 +3580,7 @@ echo "Linux AIO support $linux_aio"
 echo "ATTR/XATTR support $attr"
 echo "Install blobs     $blobs"
 echo "KVM support       $kvm"
+echo "RDMA support      $rdma"
 echo "TCG interpreter   $tcg_interpreter"
 echo "fdt support       $fdt"
 echo "preadv support    $preadv"
@@ -3594,7 +3650,7 @@ echo "libs_softmmu=$libs_softmmu" >> $config_host_mak
 echo "ARCH=$ARCH" >> $config_host_mak
 
 case "$cpu" in
-  arm|i386|x86_64|ppc)
+  arm|i386|x86_64|ppc|aarch64)
     # The TCG interpreter currently does not support ld/st optimization.
     if test "$tcg_interpreter" = "no" ; then
         echo "CONFIG_QEMU_LDST_OPTIMIZATION=y" >> $config_host_mak
@@ -3935,6 +3991,10 @@ if test "$glusterfs" = "yes" ; then
   echo "CONFIG_GLUSTERFS=y" >> $config_host_mak
 fi
 
+if test "$glusterfs_discard" = "yes" ; then
+  echo "CONFIG_GLUSTERFS_DISCARD=y" >> $config_host_mak
+fi
+
 if test "$libssh2" = "yes" ; then
   echo "CONFIG_LIBSSH2=y" >> $config_host_mak
 fi
@@ -4009,6 +4069,10 @@ if test "$trace_default" = "yes"; then
   echo "CONFIG_TRACE_DEFAULT=y" >> $config_host_mak
 fi
 
+if test "$rdma" = "yes" ; then
+  echo "CONFIG_RDMA=y" >> $config_host_mak
+fi
+
 if test "$tcg_interpreter" = "yes"; then
   QEMU_INCLUDES="-I\$(SRC_PATH)/tcg/tci $QEMU_INCLUDES"
 elif test "$ARCH" = "sparc64" ; then
@@ -4072,9 +4136,6 @@ if test "$gcov" = "yes" ; then
   echo "CONFIG_GCOV=y" >> $config_host_mak
   echo "GCOV=$gcov_tool" >> $config_host_mak
 fi
-
-# generate list of library paths for linker script
-$ld --verbose -v 2> /dev/null | grep SEARCH_DIR > config-host.ld
 
 # use included Linux headers
 if test "$linux" = "yes" ; then
@@ -4146,7 +4207,6 @@ mkdir -p $target_dir
 echo "# Automatically generated by configure - do not modify" > $config_target_mak
 
 bflt="no"
-target_nptl="no"
 interp_prefix1=`echo "$interp_prefix" | sed "s/%M/$target_name/g"`
 gdb_xml_files=""
 
@@ -4161,16 +4221,13 @@ case "$target_name" in
     TARGET_BASE_ARCH=i386
   ;;
   alpha)
-    target_nptl="yes"
   ;;
   arm|armeb)
     TARGET_ARCH=arm
     bflt="yes"
-    target_nptl="yes"
     gdb_xml_files="arm-core.xml arm-vfp.xml arm-vfp3.xml arm-neon.xml"
   ;;
   cris)
-    target_nptl="yes"
   ;;
   lm32)
   ;;
@@ -4181,12 +4238,10 @@ case "$target_name" in
   microblaze|microblazeel)
     TARGET_ARCH=microblaze
     bflt="yes"
-    target_nptl="yes"
   ;;
   mips|mipsel)
     TARGET_ARCH=mips
     echo "TARGET_ABI_MIPSO32=y" >> $config_target_mak
-    target_nptl="yes"
   ;;
   mipsn32|mipsn32el)
     TARGET_ARCH=mips64
@@ -4207,13 +4262,11 @@ case "$target_name" in
   ;;
   ppc)
     gdb_xml_files="power-core.xml power-fpu.xml power-altivec.xml power-spe.xml"
-    target_nptl="yes"
   ;;
   ppcemb)
     TARGET_BASE_ARCH=ppc
     TARGET_ABI_DIR=ppc
     gdb_xml_files="power-core.xml power-fpu.xml power-altivec.xml power-spe.xml"
-    target_nptl="yes"
   ;;
   ppc64)
     TARGET_BASE_ARCH=ppc
@@ -4230,7 +4283,6 @@ case "$target_name" in
   sh4|sh4eb)
     TARGET_ARCH=sh4
     bflt="yes"
-    target_nptl="yes"
   ;;
   sparc)
   ;;
@@ -4244,7 +4296,6 @@ case "$target_name" in
     echo "TARGET_ABI32=y" >> $config_target_mak
   ;;
   s390x)
-    target_nptl="yes"
   ;;
   unicore32)
   ;;
@@ -4325,10 +4376,6 @@ fi
 
 if test "$target_user_only" = "yes" -a "$bflt" = "yes"; then
   echo "TARGET_HAS_BFLT=y" >> $config_target_mak
-fi
-if test "$target_user_only" = "yes" \
-        -a "$nptl" = "yes" -a "$target_nptl" = "yes"; then
-  echo "CONFIG_USE_NPTL=y" >> $config_target_mak
 fi
 if test "$target_user_only" = "yes" -a "$guest_base" = "yes"; then
   echo "CONFIG_USE_GUEST_BASE=y" >> $config_target_mak
@@ -4438,21 +4485,8 @@ if test "$gprof" = "yes" ; then
   fi
 fi
 
-if test "$ARCH" = "tci"; then
-  linker_script=""
-else
-  linker_script="-Wl,-T../config-host.ld -Wl,-T,\$(SRC_PATH)/ldscripts/\$(ARCH).ld"
-fi
-
 if test "$target_linux_user" = "yes" -o "$target_bsd_user" = "yes" ; then
-  case "$ARCH" in
-  alpha | s390x | aarch64)
-    # The default placement of the application is fine.
-    ;;
-  *)
-    ldflags="$linker_script $ldflags"
-    ;;
-  esac
+  ldflags="$ldflags $textseg_ldflags"
 fi
 
 echo "LDFLAGS+=$ldflags" >> $config_target_mak
@@ -4464,18 +4498,22 @@ if [ "$pixman" = "internal" ]; then
   echo "config-host.h: subdir-pixman" >> $config_host_mak
 fi
 
+if test "$rdma" = "yes" ; then
+echo "CONFIG_RDMA=y" >> $config_host_mak
+fi
+
 if [ "$dtc_internal" = "yes" ]; then
   echo "config-host.h: subdir-dtc" >> $config_host_mak
 fi
 
 # build tree in object directory in case the source is not in the current directory
-DIRS="tests tests/tcg tests/tcg/cris tests/tcg/lm32 tests/libqos"
+DIRS="tests tests/tcg tests/tcg/cris tests/tcg/lm32 tests/libqos tests/qapi-schema tests/tcg/xtensa"
 DIRS="$DIRS pc-bios/optionrom pc-bios/spapr-rtas pc-bios/s390-ccw"
 DIRS="$DIRS roms/seabios roms/vgabios"
 DIRS="$DIRS qapi-generated"
 FILES="Makefile tests/tcg/Makefile qdict-test-data.txt"
 FILES="$FILES tests/tcg/cris/Makefile tests/tcg/cris/.gdbinit"
-FILES="$FILES tests/tcg/lm32/Makefile po/Makefile"
+FILES="$FILES tests/tcg/lm32/Makefile tests/tcg/xtensa/Makefile po/Makefile"
 FILES="$FILES pc-bios/optionrom/Makefile pc-bios/keymaps"
 FILES="$FILES pc-bios/spapr-rtas/Makefile"
 FILES="$FILES pc-bios/s390-ccw/Makefile"

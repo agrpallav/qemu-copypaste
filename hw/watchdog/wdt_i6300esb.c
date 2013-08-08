@@ -417,7 +417,8 @@ static int i6300esb_init(PCIDevice *dev)
     d->timer = qemu_new_timer_ns(vm_clock, i6300esb_timer_expired, d);
     d->previous_reboot_flag = 0;
 
-    memory_region_init_io(&d->io_mem, &i6300esb_ops, d, "i6300esb", 0x10);
+    memory_region_init_io(&d->io_mem, OBJECT(d), &i6300esb_ops, d,
+                          "i6300esb", 0x10);
     pci_register_bar(&d->dev, 0, 0, &d->io_mem);
     /* qemu_register_coalesced_mmio (addr, 0x10); ? */
 
@@ -450,6 +451,7 @@ static void i6300esb_class_init(ObjectClass *klass, void *data)
     k->class_id = PCI_CLASS_SYSTEM_OTHER;
     dc->reset = i6300esb_reset;
     dc->vmsd = &vmstate_i6300esb;
+    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
 }
 
 static const TypeInfo i6300esb_info = {

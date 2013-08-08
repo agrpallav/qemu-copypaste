@@ -595,6 +595,7 @@ static int usb_msd_initfn_storage(USBDevice *dev)
     MSDState *s = DO_UPCAST(MSDState, dev, dev);
     BlockDriverState *bs = s->conf.bs;
     SCSIDevice *scsi_dev;
+    Error *err = NULL;
 
     if (!bs) {
         error_report("drive property not set");
@@ -619,7 +620,8 @@ static int usb_msd_initfn_storage(USBDevice *dev)
     usb_desc_init(dev);
     scsi_bus_new(&s->bus, &s->dev.qdev, &usb_msd_scsi_info_storage, NULL);
     scsi_dev = scsi_bus_legacy_add_drive(&s->bus, bs, 0, !!s->removable,
-                                            s->conf.bootindex, dev->serial);
+                                         s->conf.bootindex, dev->serial,
+                                         &err);
     if (!scsi_dev) {
         return -1;
     }
@@ -744,6 +746,7 @@ static void usb_msd_class_initfn_common(ObjectClass *klass)
     uc->handle_reset   = usb_msd_handle_reset;
     uc->handle_control = usb_msd_handle_control;
     uc->handle_data    = usb_msd_handle_data;
+    set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
     dc->fw_name = "storage";
     dc->vmsd = &vmstate_usb_msd;
 }

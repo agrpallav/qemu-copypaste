@@ -476,6 +476,46 @@ static void mux_chr_update_read_handler(CharDriverState *chr)
     mux_chr_send_event(d, d->focus, CHR_EVENT_MUX_IN);
 }
 
+static bool muxes_realized;
+
+/**
+ * Called after processing of default and command-line-specified
+ * chardevs to deliver CHR_EVENT_OPENED events to any FEs attached
+ * to a mux chardev. This is done here to ensure that
+ * output/prompts/banners are only displayed for the FE that has
+ * focus when initial command-line processing/machine init is
+ * completed.
+ *
+ * After this point, any new FE attached to any new or existing
+ * mux will receive CHR_EVENT_OPENED notifications for the BE
+ * immediately.
+ */
+static void muxes_realize_done(Notifier *notifier, void *unused)
+{
+    CharDriverState *chr;
+
+    QTAILQ_FOREACH(chr, &chardevs, next) {
+        if (chr->is_mux) {
+            MuxDriver *d = chr->opaque;
+            int i;
+
+            /* send OPENED to all already-attached FEs */
+            for (i = 0; i < d->mux_cnt; i++) {
+                mux_chr_send_event(d, i, CHR_EVENT_OPENED);
+            }
+            /* mark mux as OPENED so any new FEs will immediately receive
+             * OPENED event
+             */
+            qemu_chr_be_generic_open(chr);
+        }
+    }
+    muxes_realized = true;
+}
+
+static Notifier muxes_realize_notify = {
+    .notify = muxes_realize_done,
+};
+
 static CharDriverState *qemu_chr_open_mux(CharDriverState *drv)
 {
     CharDriverState *chr;
@@ -492,6 +532,11 @@ static CharDriverState *qemu_chr_open_mux(CharDriverState *drv)
     chr->chr_accept_input = mux_chr_accept_input;
     /* Frontend guest-open / -close notification is not support with muxes */
     chr->chr_set_fe_open = NULL;
+    /* only default to opened state if we've realized the initial
+     * set of muxes
+     */
+    chr->explicit_be_open = muxes_realized ? 0 : 1;
+    chr->is_mux = 1;
 
     return chr;
 }
@@ -720,35 +765,32 @@ static GIOChannel *io_channel_from_socket(int fd)
 
 static int io_channel_send(GIOChannel *fd, const void *buf, size_t len)
 {
-    GIOStatus status;
-    size_t offset;
+    size_t offset = 0;
+    GIOStatus status = G_IO_STATUS_NORMAL;
 
-    offset = 0;
-    while (offset < len) {
-        gsize bytes_written;
+    while (offset < len && status == G_IO_STATUS_NORMAL) {
+        gsize bytes_written = 0;
 
         status = g_io_channel_write_chars(fd, buf + offset, len - offset,
                                           &bytes_written, NULL);
-        if (status != G_IO_STATUS_NORMAL) {
-            if (status == G_IO_STATUS_AGAIN) {
-                /* If we've written any data, return a partial write. */
-                if (offset) {
-                    break;
-                }
-                errno = EAGAIN;
-            } else {
-                errno = EINVAL;
-            }
-
-            return -1;
-        } else if (status == G_IO_STATUS_EOF) {
-            break;
-        }
-
         offset += bytes_written;
     }
 
-    return offset;
+    if (offset > 0) {
+        return offset;
+    }
+    switch (status) {
+    case G_IO_STATUS_NORMAL:
+        g_assert(len == 0);
+        return 0;
+    case G_IO_STATUS_AGAIN:
+        errno = EAGAIN;
+        return -1;
+    default:
+        break;
+    }
+    errno = EINVAL;
+    return -1;
 }
 
 #ifndef _WIN32
@@ -926,7 +968,6 @@ static void qemu_chr_set_echo_stdio(CharDriverState *chr, bool echo)
         tty.c_cc[VMIN] = 1;
         tty.c_cc[VTIME] = 0;
     }
-    /* if graphical mode, we allow Ctrl-C handling */
     if (!stdio_allow_signal)
         tty.c_lflag &= ~ISIG;
 
@@ -955,7 +996,6 @@ static CharDriverState *qemu_chr_open_stdio(ChardevStdio *opts)
     chr = qemu_chr_open_fd(0, 1);
     chr->chr_close = qemu_chr_close_stdio;
     chr->chr_set_echo = qemu_chr_set_echo_stdio;
-    stdio_allow_signal = display_type != DT_NOGRAPHIC;
     if (opts->has_signal) {
         stdio_allow_signal = opts->signal;
     }
@@ -2788,8 +2828,8 @@ static void ringbuf_chr_close(struct CharDriverState *chr)
     chr->opaque = NULL;
 }
 
-static CharDriverState *qemu_chr_open_memory(ChardevMemory *opts,
-                                             Error **errp)
+static CharDriverState *qemu_chr_open_ringbuf(ChardevRingbuf *opts,
+                                              Error **errp)
 {
     CharDriverState *chr;
     RingBufCharDriver *d;
@@ -2801,7 +2841,7 @@ static CharDriverState *qemu_chr_open_memory(ChardevMemory *opts,
 
     /* The size must be power of 2 */
     if (d->size & (d->size - 1)) {
-        error_setg(errp, "size of memory chardev must be power of two");
+        error_setg(errp, "size of ringbuf chardev must be power of two");
         goto fail;
     }
 
@@ -2932,6 +2972,14 @@ QemuOpts *qemu_chr_parse_compat(const char *label, const char *filename)
     if (strstart(filename, "mon:", &p)) {
         filename = p;
         qemu_opt_set(opts, "mux", "on");
+        if (strcmp(filename, "stdio") == 0) {
+            /* Monitor is muxed to stdio: do not exit on Ctrl+C by default
+             * but pass it to the guest.  Handle this only for compat syntax,
+             * for -chardev syntax we have special option for this.
+             * This is what -nographic did, redirecting+muxing serial+monitor
+             * to stdio causing Ctrl+C to be passed to guest. */
+            qemu_opt_set(opts, "signal", "off");
+        }
     }
 
     if (strcmp(filename, "null")    == 0 ||
@@ -3060,8 +3108,7 @@ static void qemu_chr_parse_stdio(QemuOpts *opts, ChardevBackend *backend,
 {
     backend->stdio = g_new0(ChardevStdio, 1);
     backend->stdio->has_signal = true;
-    backend->stdio->signal =
-        qemu_opt_get_bool(opts, "signal", display_type != DT_NOGRAPHIC);
+    backend->stdio->signal = qemu_opt_get_bool(opts, "signal", true);
 }
 
 static void qemu_chr_parse_serial(QemuOpts *opts, ChardevBackend *backend,
@@ -3103,17 +3150,17 @@ static void qemu_chr_parse_pipe(QemuOpts *opts, ChardevBackend *backend,
     backend->pipe->device = g_strdup(device);
 }
 
-static void qemu_chr_parse_memory(QemuOpts *opts, ChardevBackend *backend,
-                                  Error **errp)
+static void qemu_chr_parse_ringbuf(QemuOpts *opts, ChardevBackend *backend,
+                                   Error **errp)
 {
     int val;
 
-    backend->memory = g_new0(ChardevMemory, 1);
+    backend->ringbuf = g_new0(ChardevRingbuf, 1);
 
-    val = qemu_opt_get_number(opts, "size", 0);
+    val = qemu_opt_get_size(opts, "size", 0);
     if (val != 0) {
-        backend->memory->has_size = true;
-        backend->memory->size = val;
+        backend->ringbuf->has_size = true;
+        backend->ringbuf->size = val;
     }
 }
 
@@ -3721,8 +3768,9 @@ ChardevReturn *qmp_chardev_add(const char *id, ChardevBackend *backend,
     case CHARDEV_BACKEND_KIND_VC:
         chr = vc_init(backend->vc);
         break;
+    case CHARDEV_BACKEND_KIND_RINGBUF:
     case CHARDEV_BACKEND_KIND_MEMORY:
-        chr = qemu_chr_open_memory(backend->memory, errp);
+        chr = qemu_chr_open_ringbuf(backend->ringbuf, errp);
         break;
     default:
         error_setg(errp, "unknown chardev backend (%d)", backend->kind);
@@ -3772,8 +3820,8 @@ static void register_types(void)
     register_char_driver_qapi("null", CHARDEV_BACKEND_KIND_NULL, NULL);
     register_char_driver("socket", qemu_chr_open_socket);
     register_char_driver("udp", qemu_chr_open_udp);
-    register_char_driver_qapi("memory", CHARDEV_BACKEND_KIND_MEMORY,
-                              qemu_chr_parse_memory);
+    register_char_driver_qapi("ringbuf", CHARDEV_BACKEND_KIND_RINGBUF,
+                              qemu_chr_parse_ringbuf);
     register_char_driver_qapi("file", CHARDEV_BACKEND_KIND_FILE,
                               qemu_chr_parse_file_out);
     register_char_driver_qapi("stdio", CHARDEV_BACKEND_KIND_STDIO,
@@ -3792,6 +3840,14 @@ static void register_types(void)
                               qemu_chr_parse_pipe);
     register_char_driver_qapi("mux", CHARDEV_BACKEND_KIND_MUX,
                               qemu_chr_parse_mux);
+    /* Bug-compatibility: */
+    register_char_driver_qapi("memory", CHARDEV_BACKEND_KIND_MEMORY,
+                              qemu_chr_parse_ringbuf);
+    /* this must be done after machine init, since we register FEs with muxes
+     * as part of realize functions like serial_isa_realizefn when -nographic
+     * is specified
+     */
+    qemu_add_machine_init_done_notifier(&muxes_realize_notify);
 }
 
 type_init(register_types);

@@ -9726,10 +9726,12 @@ void ppc_cpu_dump_statistics(CPUState *cs, FILE*f,
 }
 
 /*****************************************************************************/
-static inline void gen_intermediate_code_internal(CPUPPCState *env,
+static inline void gen_intermediate_code_internal(PowerPCCPU *cpu,
                                                   TranslationBlock *tb,
-                                                  int search_pc)
+                                                  bool search_pc)
 {
+    CPUState *cs = CPU(cpu);
+    CPUPPCState *env = &cpu->env;
     DisasContext ctx, *ctxp = &ctx;
     opc_handler_t **table, *handler;
     target_ulong pc_start;
@@ -9769,8 +9771,9 @@ static inline void gen_intermediate_code_internal(CPUPPCState *env,
         ctx.singlestep_enabled = 0;
     if ((env->flags & POWERPC_FLAG_BE) && msr_be)
         ctx.singlestep_enabled |= CPU_BRANCH_STEP;
-    if (unlikely(env->singlestep_enabled))
+    if (unlikely(cs->singlestep_enabled)) {
         ctx.singlestep_enabled |= GDBSTUB_SINGLE_STEP;
+    }
 #if defined (DO_SINGLE_STEP) && 0
     /* Single step trace mode */
     msr_se = 1;
@@ -9872,7 +9875,7 @@ static inline void gen_intermediate_code_internal(CPUPPCState *env,
                      ctx.exception != POWERPC_EXCP_BRANCH)) {
             gen_exception(ctxp, POWERPC_EXCP_TRACE);
         } else if (unlikely(((ctx.nip & (TARGET_PAGE_SIZE - 1)) == 0) ||
-                            (env->singlestep_enabled) ||
+                            (cs->singlestep_enabled) ||
                             singlestep ||
                             num_insns >= max_insns)) {
             /* if we reach a page boundary or are single stepping, stop
@@ -9886,7 +9889,7 @@ static inline void gen_intermediate_code_internal(CPUPPCState *env,
     if (ctx.exception == POWERPC_EXCP_NONE) {
         gen_goto_tb(&ctx, 0, ctx.nip);
     } else if (ctx.exception != POWERPC_EXCP_BRANCH) {
-        if (unlikely(env->singlestep_enabled)) {
+        if (unlikely(cs->singlestep_enabled)) {
             gen_debug_exception(ctxp);
         }
         /* Generate the return instruction */
@@ -9917,12 +9920,12 @@ static inline void gen_intermediate_code_internal(CPUPPCState *env,
 
 void gen_intermediate_code (CPUPPCState *env, struct TranslationBlock *tb)
 {
-    gen_intermediate_code_internal(env, tb, 0);
+    gen_intermediate_code_internal(ppc_env_get_cpu(env), tb, false);
 }
 
 void gen_intermediate_code_pc (CPUPPCState *env, struct TranslationBlock *tb)
 {
-    gen_intermediate_code_internal(env, tb, 1);
+    gen_intermediate_code_internal(ppc_env_get_cpu(env), tb, true);
 }
 
 void restore_state_to_opc(CPUPPCState *env, TranslationBlock *tb, int pc_pos)

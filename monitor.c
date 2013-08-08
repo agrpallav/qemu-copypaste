@@ -189,6 +189,7 @@ struct Monitor {
     int suspend_cnt;
     bool skip_flush;
     QString *outbuf;
+    guint watch;
     ReadLineState *rs;
     MonitorControl *mc;
     CPUState *mon_cpu;
@@ -263,7 +264,10 @@ int monitor_read_password(Monitor *mon, ReadLineFunc *readline_func,
 static gboolean monitor_unblocked(GIOChannel *chan, GIOCondition cond,
                                   void *opaque)
 {
-    monitor_flush(opaque);
+    Monitor *mon = opaque;
+
+    mon->watch = 0;
+    monitor_flush(mon);
     return FALSE;
 }
 
@@ -294,7 +298,10 @@ void monitor_flush(Monitor *mon)
             QDECREF(mon->outbuf);
             mon->outbuf = tmp;
         }
-        qemu_chr_fe_add_watch(mon->chr, G_IO_OUT, monitor_unblocked, mon);
+        if (mon->watch == 0) {
+            mon->watch = qemu_chr_fe_add_watch(mon->chr, G_IO_OUT,
+                                               monitor_unblocked, mon);
+        }
     }
 }
 
@@ -490,6 +497,7 @@ static const char *monitor_event_names[] = {
     [QEVENT_BLOCK_JOB_READY] = "BLOCK_JOB_READY",
     [QEVENT_DEVICE_DELETED] = "DEVICE_DELETED",
     [QEVENT_DEVICE_TRAY_MOVED] = "DEVICE_TRAY_MOVED",
+    [QEVENT_NIC_RX_FILTER_CHANGED] = "NIC_RX_FILTER_CHANGED",
     [QEVENT_SUSPEND] = "SUSPEND",
     [QEVENT_SUSPEND_DISK] = "SUSPEND_DISK",
     [QEVENT_WAKEUP] = "WAKEUP",
@@ -1156,7 +1164,7 @@ static void memory_dump(Monitor *mon, int count, int format, int wsize,
             cpu_physical_memory_read(addr, buf, l);
         } else {
             env = mon_get_cpu();
-            if (cpu_memory_rw_debug(env, addr, buf, l, 0) < 0) {
+            if (cpu_memory_rw_debug(ENV_GET_CPU(env), addr, buf, l, 0) < 0) {
                 monitor_printf(mon, " Cannot access memory\n");
                 break;
             }
@@ -1806,14 +1814,12 @@ static void do_info_mtree(Monitor *mon, const QDict *qdict)
 static void do_info_numa(Monitor *mon, const QDict *qdict)
 {
     int i;
-    CPUArchState *env;
     CPUState *cpu;
 
     monitor_printf(mon, "%d nodes\n", nb_numa_nodes);
     for (i = 0; i < nb_numa_nodes; i++) {
         monitor_printf(mon, "node %d cpus:", i);
-        for (env = first_cpu; env != NULL; env = env->next_cpu) {
-            cpu = ENV_GET_CPU(env);
+        for (cpu = first_cpu; cpu != NULL; cpu = cpu->next_cpu) {
             if (cpu->numa_node == i) {
                 monitor_printf(mon, " %d", cpu->cpu_index);
             }

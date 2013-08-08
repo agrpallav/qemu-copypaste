@@ -842,8 +842,10 @@ STEXI
 Normally, QEMU uses SDL to display the VGA output. With this option,
 you can totally disable graphical output so that QEMU is a simple
 command line application. The emulated serial port is redirected on
-the console. Therefore, you can still use QEMU to debug a Linux kernel
-with a serial console.
+the console and muxed with the monitor (unless redirected elsewhere
+explicitly). Therefore, you can still use QEMU to debug a Linux kernel
+with a serial console.  Use @key{C-a h} for help on switching between
+the console and monitor.
 ETEXI
 
 DEF("curses", 0, QEMU_OPTION_curses,
@@ -1781,7 +1783,7 @@ DEF("chardev", HAS_ARG, QEMU_OPTION_chardev,
     "-chardev msmouse,id=id[,mux=on|off]\n"
     "-chardev vc,id=id[[,width=width][,height=height]][[,cols=cols][,rows=rows]]\n"
     "         [,mux=on|off]\n"
-    "-chardev memory,id=id[,size=size]\n"
+    "-chardev ringbuf,id=id[,size=size]\n"
     "-chardev file,id=id,path=path[,mux=on|off]\n"
     "-chardev pipe,id=id,path=path[,mux=on|off]\n"
 #ifdef _WIN32
@@ -1819,7 +1821,7 @@ Backend is one of:
 @option{udp},
 @option{msmouse},
 @option{vc},
-@option{memory},
+@option{ringbuf},
 @option{file},
 @option{pipe},
 @option{console},
@@ -1928,7 +1930,7 @@ the console, in pixels.
 @option{cols} and @option{rows} specify that the console be sized to fit a text
 console with the given dimensions.
 
-@item -chardev memory ,id=@var{id} [,size=@var{size}]
+@item -chardev ringbuf ,id=@var{id} [,size=@var{size}]
 
 Create a ring buffer with fixed size @option{size}.
 @var{size} must be a power of two, and defaults to @code{64K}).
@@ -2485,14 +2487,15 @@ same as if you had specified @code{-serial tcp} except the unix domain socket
 @item mon:@var{dev_string}
 This is a special option to allow the monitor to be multiplexed onto
 another serial port.  The monitor is accessed with key sequence of
-@key{Control-a} and then pressing @key{c}. See monitor access
-@ref{pcsys_keys} in the -nographic section for more keys.
+@key{Control-a} and then pressing @key{c}.
 @var{dev_string} should be any one of the serial devices specified
 above.  An example to multiplex the monitor onto a telnet server
 listening on port 4444 would be:
 @table @code
 @item -serial mon:telnet::4444,server,nowait
 @end table
+When the monitor is multiplexed to stdio in this way, Ctrl+C will not terminate
+QEMU any more but will be passed to the guest instead.
 
 @item braille
 Braille device.  This will use BrlAPI to display the braille output on a real
@@ -3096,6 +3099,17 @@ Create an new object of type @var{typename} setting properties
 in the order they are specified.  Note that the 'id'
 property must be set.  These objects are placed in the
 '/objects' path.
+ETEXI
+
+DEF("msg", HAS_ARG, QEMU_OPTION_msg,
+    "-msg timestamp[=on|off]\n"
+    "                change the format of messages\n"
+    "                on|off controls leading timestamps (default:on)\n",
+    QEMU_ARCH_ALL)
+STEXI
+@item -msg timestamp[=on|off]
+@findex -msg
+prepend a timestamp to each log message.(default:on)
 ETEXI
 
 HXCOMM This is the last statement. Insert new options before this line!

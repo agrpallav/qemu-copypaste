@@ -648,7 +648,8 @@ static void cs4231a_initfn (Object *obj)
 {
     CSState *s = CS4231A (obj);
 
-    memory_region_init_io (&s->ioports, &cs_ioport_ops, s, "cs4231a", 4);
+    memory_region_init_io (&s->ioports, OBJECT(s), &cs_ioport_ops, s,
+                           "cs4231a", 4);
 }
 
 static void cs4231a_realizefn (DeviceState *dev, Error **errp)
@@ -684,6 +685,7 @@ static void cs4231a_class_initfn (ObjectClass *klass, void *data)
 
     dc->realize = cs4231a_realizefn;
     dc->reset = cs4231a_reset;
+    set_bit(DEVICE_CATEGORY_SOUND, dc->categories);
     dc->desc = "Crystal Semiconductor CS4231A";
     dc->vmsd = &vmstate_cs4231a;
     dc->props = cs4231a_properties;

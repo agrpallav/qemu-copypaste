@@ -363,7 +363,7 @@ void x86_cpu_dump_state(CPUState *cs, FILE *f, fprintf_function cpu_fprintf,
 
         cpu_fprintf(f, "Code=");
         for (i = 0; i < DUMP_CODE_BYTES_TOTAL; i++) {
-            if (cpu_memory_rw_debug(env, base - offs + i, &code, 1, 0) == 0) {
+            if (cpu_memory_rw_debug(cs, base - offs + i, &code, 1, 0) == 0) {
                 snprintf(codestr, sizeof(codestr), "%02x", code);
             } else {
                 snprintf(codestr, sizeof(codestr), "??");
@@ -884,8 +884,10 @@ int cpu_x86_handle_mmu_fault(CPUX86State *env, target_ulong addr,
     return 1;
 }
 
-hwaddr cpu_get_phys_page_debug(CPUX86State *env, target_ulong addr)
+hwaddr x86_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
 {
+    X86CPU *cpu = X86_CPU(cs);
+    CPUX86State *env = &cpu->env;
     target_ulong pde_addr, pte_addr;
     uint64_t pte;
     hwaddr paddr;
@@ -1188,6 +1190,7 @@ void cpu_x86_inject_mce(Monitor *mon, X86CPU *cpu, int bank,
                         uint64_t status, uint64_t mcg_status, uint64_t addr,
                         uint64_t misc, int flags)
 {
+    CPUState *cs = CPU(cpu);
     CPUX86State *cenv = &cpu->env;
     MCEInjectionParams params = {
         .mon = mon,
@@ -1200,7 +1203,6 @@ void cpu_x86_inject_mce(Monitor *mon, X86CPU *cpu, int bank,
         .flags = flags,
     };
     unsigned bank_num = cenv->mcg_cap & 0xff;
-    CPUX86State *env;
 
     if (!cenv->mcg_cap) {
         monitor_printf(mon, "MCE injection not supported\n");
@@ -1220,19 +1222,22 @@ void cpu_x86_inject_mce(Monitor *mon, X86CPU *cpu, int bank,
         return;
     }
 
-    run_on_cpu(CPU(cpu), do_inject_x86_mce, &params);
+    run_on_cpu(cs, do_inject_x86_mce, &params);
     if (flags & MCE_INJECT_BROADCAST) {
+        CPUState *other_cs;
+
         params.bank = 1;
         params.status = MCI_STATUS_VAL | MCI_STATUS_UC;
         params.mcg_status = MCG_STATUS_MCIP | MCG_STATUS_RIPV;
         params.addr = 0;
         params.misc = 0;
-        for (env = first_cpu; env != NULL; env = env->next_cpu) {
-            if (cenv == env) {
+        for (other_cs = first_cpu; other_cs != NULL;
+             other_cs = other_cs->next_cpu) {
+            if (other_cs == cs) {
                 continue;
             }
-            params.cpu = x86_env_get_cpu(env);
-            run_on_cpu(CPU(cpu), do_inject_x86_mce, &params);
+            params.cpu = X86_CPU(other_cs);
+            run_on_cpu(other_cs, do_inject_x86_mce, &params);
         }
     }
 }
@@ -1255,6 +1260,8 @@ int cpu_x86_get_descr_debug(CPUX86State *env, unsigned int selector,
                             target_ulong *base, unsigned int *limit,
                             unsigned int *flags)
 {
+    X86CPU *cpu = x86_env_get_cpu(env);
+    CPUState *cs = CPU(cpu);
     SegmentCache *dt;
     target_ulong ptr;
     uint32_t e1, e2;
@@ -1267,8 +1274,8 @@ int cpu_x86_get_descr_debug(CPUX86State *env, unsigned int selector,
     index = selector & ~7;
     ptr = dt->base + index;
     if ((index + 7) > dt->limit
-        || cpu_memory_rw_debug(env, ptr, (uint8_t *)&e1, sizeof(e1), 0) != 0
-        || cpu_memory_rw_debug(env, ptr+4, (uint8_t *)&e2, sizeof(e2), 0) != 0)
+        || cpu_memory_rw_debug(cs, ptr, (uint8_t *)&e1, sizeof(e1), 0) != 0
+        || cpu_memory_rw_debug(cs, ptr+4, (uint8_t *)&e2, sizeof(e2), 0) != 0)
         return 0;
 
     *base = ((e1 >> 16) | ((e2 & 0xff) << 16) | (e2 & 0xff000000));

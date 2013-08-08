@@ -66,6 +66,8 @@
 #define PROM_FILENAME        "openbios-sparc32"
 #define CFG_ADDR             0xd00000510ULL
 #define FW_CFG_SUN4M_DEPTH   (FW_CFG_ARCH_LOCAL + 0x00)
+#define FW_CFG_SUN4M_WIDTH   (FW_CFG_ARCH_LOCAL + 0x01)
+#define FW_CFG_SUN4M_HEIGHT  (FW_CFG_ARCH_LOCAL + 0x02)
 
 #define MAX_CPUS 16
 #define MAX_PILS 16
@@ -264,9 +266,8 @@ static void secondary_cpu_reset(void *opaque)
 
 static void cpu_halt_signal(void *opaque, int irq, int level)
 {
-    if (level && cpu_single_env) {
-        cpu_interrupt(CPU(sparc_env_get_cpu(cpu_single_env)),
-                      CPU_INTERRUPT_HALT);
+    if (level && current_cpu) {
+        cpu_interrupt(current_cpu, CPU_INTERRUPT_HALT);
     }
 }
 
@@ -558,6 +559,9 @@ static void tcx_init(hwaddr addr, int vram_size, int width,
 }
 
 /* NCR89C100/MACIO Internal ID register */
+
+#define TYPE_MACIO_ID_REGISTER "macio_idreg"
+
 static const uint8_t idreg_data[] = { 0xfe, 0x81, 0x01, 0x03 };
 
 static void idreg_init(hwaddr addr)
@@ -565,7 +569,7 @@ static void idreg_init(hwaddr addr)
     DeviceState *dev;
     SysBusDevice *s;
 
-    dev = qdev_create(NULL, "macio_idreg");
+    dev = qdev_create(NULL, TYPE_MACIO_ID_REGISTER);
     qdev_init_nofail(dev);
     s = SYS_BUS_DEVICE(dev);
 
@@ -573,16 +577,21 @@ static void idreg_init(hwaddr addr)
     cpu_physical_memory_write_rom(addr, idreg_data, sizeof(idreg_data));
 }
 
+#define MACIO_ID_REGISTER(obj) \
+    OBJECT_CHECK(IDRegState, (obj), TYPE_MACIO_ID_REGISTER)
+
 typedef struct IDRegState {
-    SysBusDevice busdev;
+    SysBusDevice parent_obj;
+
     MemoryRegion mem;
 } IDRegState;
 
 static int idreg_init1(SysBusDevice *dev)
 {
-    IDRegState *s = FROM_SYSBUS(IDRegState, dev);
+    IDRegState *s = MACIO_ID_REGISTER(dev);
 
-    memory_region_init_ram(&s->mem, "sun4m.idreg", sizeof(idreg_data));
+    memory_region_init_ram(&s->mem, OBJECT(s),
+                           "sun4m.idreg", sizeof(idreg_data));
     vmstate_register_ram_global(&s->mem);
     memory_region_set_readonly(&s->mem, true);
     sysbus_init_mmio(dev, &s->mem);
@@ -597,14 +606,18 @@ static void idreg_class_init(ObjectClass *klass, void *data)
 }
 
 static const TypeInfo idreg_info = {
-    .name          = "macio_idreg",
+    .name          = TYPE_MACIO_ID_REGISTER,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(IDRegState),
     .class_init    = idreg_class_init,
 };
 
+#define TYPE_TCX_AFX "tcx_afx"
+#define TCX_AFX(obj) OBJECT_CHECK(AFXState, (obj), TYPE_TCX_AFX)
+
 typedef struct AFXState {
-    SysBusDevice busdev;
+    SysBusDevice parent_obj;
+
     MemoryRegion mem;
 } AFXState;
 
@@ -614,7 +627,7 @@ static void afx_init(hwaddr addr)
     DeviceState *dev;
     SysBusDevice *s;
 
-    dev = qdev_create(NULL, "tcx_afx");
+    dev = qdev_create(NULL, TYPE_TCX_AFX);
     qdev_init_nofail(dev);
     s = SYS_BUS_DEVICE(dev);
 
@@ -623,9 +636,9 @@ static void afx_init(hwaddr addr)
 
 static int afx_init1(SysBusDevice *dev)
 {
-    AFXState *s = FROM_SYSBUS(AFXState, dev);
+    AFXState *s = TCX_AFX(dev);
 
-    memory_region_init_ram(&s->mem, "sun4m.afx", 4);
+    memory_region_init_ram(&s->mem, OBJECT(s), "sun4m.afx", 4);
     vmstate_register_ram_global(&s->mem);
     sysbus_init_mmio(dev, &s->mem);
     return 0;
@@ -639,14 +652,18 @@ static void afx_class_init(ObjectClass *klass, void *data)
 }
 
 static const TypeInfo afx_info = {
-    .name          = "tcx_afx",
+    .name          = TYPE_TCX_AFX,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(AFXState),
     .class_init    = afx_class_init,
 };
 
+#define TYPE_OPENPROM "openprom"
+#define OPENPROM(obj) OBJECT_CHECK(PROMState, (obj), TYPE_OPENPROM)
+
 typedef struct PROMState {
-    SysBusDevice busdev;
+    SysBusDevice parent_obj;
+
     MemoryRegion prom;
 } PROMState;
 
@@ -664,7 +681,7 @@ static void prom_init(hwaddr addr, const char *bios_name)
     char *filename;
     int ret;
 
-    dev = qdev_create(NULL, "openprom");
+    dev = qdev_create(NULL, TYPE_OPENPROM);
     qdev_init_nofail(dev);
     s = SYS_BUS_DEVICE(dev);
 
@@ -693,9 +710,9 @@ static void prom_init(hwaddr addr, const char *bios_name)
 
 static int prom_init1(SysBusDevice *dev)
 {
-    PROMState *s = FROM_SYSBUS(PROMState, dev);
+    PROMState *s = OPENPROM(dev);
 
-    memory_region_init_ram(&s->prom, "sun4m.prom", PROM_SIZE_MAX);
+    memory_region_init_ram(&s->prom, OBJECT(s), "sun4m.prom", PROM_SIZE_MAX);
     vmstate_register_ram_global(&s->prom);
     memory_region_set_readonly(&s->prom, true);
     sysbus_init_mmio(dev, &s->prom);
@@ -716,15 +733,18 @@ static void prom_class_init(ObjectClass *klass, void *data)
 }
 
 static const TypeInfo prom_info = {
-    .name          = "openprom",
+    .name          = TYPE_OPENPROM,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(PROMState),
     .class_init    = prom_class_init,
 };
 
-typedef struct RamDevice
-{
-    SysBusDevice busdev;
+#define TYPE_SUN4M_MEMORY "memory"
+#define SUN4M_RAM(obj) OBJECT_CHECK(RamDevice, (obj), TYPE_SUN4M_MEMORY)
+
+typedef struct RamDevice {
+    SysBusDevice parent_obj;
+
     MemoryRegion ram;
     uint64_t size;
 } RamDevice;
@@ -732,9 +752,9 @@ typedef struct RamDevice
 /* System RAM */
 static int ram_init1(SysBusDevice *dev)
 {
-    RamDevice *d = FROM_SYSBUS(RamDevice, dev);
+    RamDevice *d = SUN4M_RAM(dev);
 
-    memory_region_init_ram(&d->ram, "sun4m.ram", d->size);
+    memory_region_init_ram(&d->ram, OBJECT(d), "sun4m.ram", d->size);
     vmstate_register_ram_global(&d->ram);
     sysbus_init_mmio(dev, &d->ram);
     return 0;
@@ -758,7 +778,7 @@ static void ram_init(hwaddr addr, ram_addr_t RAM_size,
     dev = qdev_create(NULL, "memory");
     s = SYS_BUS_DEVICE(dev);
 
-    d = FROM_SYSBUS(RamDevice, s);
+    d = SUN4M_RAM(dev);
     d->size = RAM_size;
     qdev_init_nofail(dev);
 
@@ -780,7 +800,7 @@ static void ram_class_init(ObjectClass *klass, void *data)
 }
 
 static const TypeInfo ram_info = {
-    .name          = "memory",
+    .name          = TYPE_SUN4M_MEMORY,
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(RamDevice),
     .class_init    = ram_class_init,
@@ -991,6 +1011,8 @@ static void sun4m_hw_init(const struct sun4m_hwdef *hwdef, ram_addr_t RAM_size,
     fw_cfg_add_i64(fw_cfg, FW_CFG_RAM_SIZE, (uint64_t)ram_size);
     fw_cfg_add_i16(fw_cfg, FW_CFG_MACHINE_ID, hwdef->machine_id);
     fw_cfg_add_i16(fw_cfg, FW_CFG_SUN4M_DEPTH, graphic_depth);
+    fw_cfg_add_i16(fw_cfg, FW_CFG_SUN4M_WIDTH, graphic_width);
+    fw_cfg_add_i16(fw_cfg, FW_CFG_SUN4M_HEIGHT, graphic_height);
     fw_cfg_add_i32(fw_cfg, FW_CFG_KERNEL_ADDR, KERNEL_LOAD_ADDR);
     fw_cfg_add_i32(fw_cfg, FW_CFG_KERNEL_SIZE, kernel_size);
     if (kernel_cmdline) {

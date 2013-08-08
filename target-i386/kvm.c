@@ -318,7 +318,7 @@ int kvm_arch_on_sigbus_vcpu(CPUState *c, int code, void *addr)
 
     if ((env->mcg_cap & MCG_SER_P) && addr
         && (code == BUS_MCEERR_AR || code == BUS_MCEERR_AO)) {
-        if (qemu_ram_addr_from_host(addr, &ram_addr) ||
+        if (qemu_ram_addr_from_host(addr, &ram_addr) == NULL ||
             !kvm_physical_memory_addr_from_host(c->kvm_state, addr, &paddr)) {
             fprintf(stderr, "Hardware memory error for memory used by "
                     "QEMU itself instead of guest system!\n");
@@ -345,20 +345,22 @@ int kvm_arch_on_sigbus_vcpu(CPUState *c, int code, void *addr)
 
 int kvm_arch_on_sigbus(int code, void *addr)
 {
-    if ((first_cpu->mcg_cap & MCG_SER_P) && addr && code == BUS_MCEERR_AO) {
+    X86CPU *cpu = X86_CPU(first_cpu);
+
+    if ((cpu->env.mcg_cap & MCG_SER_P) && addr && code == BUS_MCEERR_AO) {
         ram_addr_t ram_addr;
         hwaddr paddr;
 
         /* Hope we are lucky for AO MCE */
-        if (qemu_ram_addr_from_host(addr, &ram_addr) ||
-            !kvm_physical_memory_addr_from_host(CPU(first_cpu)->kvm_state,
+        if (qemu_ram_addr_from_host(addr, &ram_addr) == NULL ||
+            !kvm_physical_memory_addr_from_host(first_cpu->kvm_state,
                                                 addr, &paddr)) {
             fprintf(stderr, "Hardware memory error for memory used by "
                     "QEMU itself instead of guest system!: %p\n", addr);
             return 0;
         }
         kvm_hwpoison_page_add(ram_addr);
-        kvm_mce_inject(x86_env_get_cpu(first_cpu), paddr, code);
+        kvm_mce_inject(X86_CPU(first_cpu), paddr, code);
     } else {
         if (code == BUS_MCEERR_AO) {
             return 0;
@@ -741,7 +743,6 @@ static int kvm_get_supported_msrs(KVMState *s)
 
 int kvm_arch_init(KVMState *s)
 {
-    QemuOptsList *list = qemu_find_opts("machine");
     uint64_t identity_base = 0xfffbc000;
     uint64_t shadow_mem;
     int ret;
@@ -790,15 +791,13 @@ int kvm_arch_init(KVMState *s)
     }
     qemu_register_reset(kvm_unpoison_all, NULL);
 
-    if (!QTAILQ_EMPTY(&list->head)) {
-        shadow_mem = qemu_opt_get_size(QTAILQ_FIRST(&list->head),
-                                       "kvm_shadow_mem", -1);
-        if (shadow_mem != -1) {
-            shadow_mem /= 4096;
-            ret = kvm_vm_ioctl(s, KVM_SET_NR_MMU_PAGES, shadow_mem);
-            if (ret < 0) {
-                return ret;
-            }
+    shadow_mem = qemu_opt_get_size(qemu_get_machine_opts(),
+                                   "kvm_shadow_mem", -1);
+    if (shadow_mem != -1) {
+        shadow_mem /= 4096;
+        ret = kvm_vm_ioctl(s, KVM_SET_NR_MMU_PAGES, shadow_mem);
+        if (ret < 0) {
+            return ret;
         }
     }
     return 0;
@@ -1595,6 +1594,7 @@ static int kvm_get_vcpu_events(X86CPU *cpu)
 
 static int kvm_guest_debug_workarounds(X86CPU *cpu)
 {
+    CPUState *cs = CPU(cpu);
     CPUX86State *env = &cpu->env;
     int ret = 0;
     unsigned long reinject_trap = 0;
@@ -1617,8 +1617,8 @@ static int kvm_guest_debug_workarounds(X86CPU *cpu)
      * reinject them via SET_GUEST_DEBUG.
      */
     if (reinject_trap ||
-        (!kvm_has_robust_singlestep() && env->singlestep_enabled)) {
-        ret = kvm_update_guest_debug(env, reinject_trap);
+        (!kvm_has_robust_singlestep() && cs->singlestep_enabled)) {
+        ret = kvm_update_guest_debug(cs, reinject_trap);
     }
     return ret;
 }
@@ -1932,25 +1932,23 @@ static int kvm_handle_tpr_access(X86CPU *cpu)
     return 1;
 }
 
-int kvm_arch_insert_sw_breakpoint(CPUState *cpu, struct kvm_sw_breakpoint *bp)
+int kvm_arch_insert_sw_breakpoint(CPUState *cs, struct kvm_sw_breakpoint *bp)
 {
-    CPUX86State *env = &X86_CPU(cpu)->env;
     static const uint8_t int3 = 0xcc;
 
-    if (cpu_memory_rw_debug(env, bp->pc, (uint8_t *)&bp->saved_insn, 1, 0) ||
-        cpu_memory_rw_debug(env, bp->pc, (uint8_t *)&int3, 1, 1)) {
+    if (cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&bp->saved_insn, 1, 0) ||
+        cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&int3, 1, 1)) {
         return -EINVAL;
     }
     return 0;
 }
 
-int kvm_arch_remove_sw_breakpoint(CPUState *cpu, struct kvm_sw_breakpoint *bp)
+int kvm_arch_remove_sw_breakpoint(CPUState *cs, struct kvm_sw_breakpoint *bp)
 {
-    CPUX86State *env = &X86_CPU(cpu)->env;
     uint8_t int3;
 
-    if (cpu_memory_rw_debug(env, bp->pc, &int3, 1, 0) || int3 != 0xcc ||
-        cpu_memory_rw_debug(env, bp->pc, (uint8_t *)&bp->saved_insn, 1, 1)) {
+    if (cpu_memory_rw_debug(cs, bp->pc, &int3, 1, 0) || int3 != 0xcc ||
+        cpu_memory_rw_debug(cs, bp->pc, (uint8_t *)&bp->saved_insn, 1, 1)) {
         return -EINVAL;
     }
     return 0;
@@ -2043,13 +2041,14 @@ static CPUWatchpoint hw_watchpoint;
 static int kvm_handle_debug(X86CPU *cpu,
                             struct kvm_debug_exit_arch *arch_info)
 {
+    CPUState *cs = CPU(cpu);
     CPUX86State *env = &cpu->env;
     int ret = 0;
     int n;
 
     if (arch_info->exception == 1) {
         if (arch_info->dr6 & (1 << 14)) {
-            if (env->singlestep_enabled) {
+            if (cs->singlestep_enabled) {
                 ret = EXCP_DEBUG;
             }
         } else {

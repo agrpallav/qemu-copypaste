@@ -409,7 +409,7 @@ static QemuOptsList qemu_machine_opts = {
             .help = "Dump current dtb to a file and quit",
         }, {
             .name = "phandle_start",
-            .type = QEMU_OPT_STRING,
+            .type = QEMU_OPT_NUMBER,
             .help = "The first phandle ID we may generate dynamically",
         }, {
             .name = "dt_compatible",
@@ -515,6 +515,37 @@ static QemuOptsList qemu_realtime_opts = {
         { /* end of list */ }
     },
 };
+
+static QemuOptsList qemu_msg_opts = {
+    .name = "msg",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_msg_opts.head),
+    .desc = {
+        {
+            .name = "timestamp",
+            .type = QEMU_OPT_BOOL,
+        },
+        { /* end of list */ }
+    },
+};
+
+/**
+ * Get machine options
+ *
+ * Returns: machine options (never null).
+ */
+QemuOpts *qemu_get_machine_opts(void)
+{
+    QemuOptsList *list;
+    QemuOpts *opts;
+
+    list = qemu_find_opts("machine");
+    assert(list);
+    opts = qemu_opts_find(list, NULL);
+    if (!opts) {
+        opts = qemu_opts_create_nofail(list);
+    }
+    return opts;
+}
 
 const char *qemu_get_vm_name(void)
 {
@@ -1017,15 +1048,9 @@ static int parse_sandbox(QemuOpts *opts, void *opaque)
     return 0;
 }
 
-/*********QEMU USB setting******/
 bool usb_enabled(bool default_usb)
 {
-    QemuOpts *mach_opts;
-    mach_opts = qemu_opts_find(qemu_find_opts("machine"), 0);
-    if (mach_opts) {
-        return qemu_opt_get_bool(mach_opts, "usb", default_usb);
-    }
-    return default_usb;
+    return qemu_opt_get_bool(qemu_get_machine_opts(), "usb", default_usb);
 }
 
 #ifndef _WIN32
@@ -1488,6 +1513,12 @@ static void configure_realtime(QemuOpts *opts)
             exit(1);
         }
     }
+}
+
+
+static void configure_msg(QemuOpts *opts)
+{
+    enable_timestamp_msg = qemu_opt_get_bool(opts, "timestamp", true);
 }
 
 /***********************************************************/
@@ -2672,17 +2703,13 @@ static struct {
 
 static int configure_accelerator(void)
 {
-    const char *p = NULL;
+    const char *p;
     char buf[10];
     int i, ret;
     bool accel_initialised = false;
     bool init_failed = false;
 
-    QemuOptsList *list = qemu_find_opts("machine");
-    if (!QTAILQ_EMPTY(&list->head)) {
-        p = qemu_opt_get(QTAILQ_FIRST(&list->head), "accel");
-    }
-
+    p = qemu_opt_get(qemu_get_machine_opts(), "accel");
     if (p == NULL) {
         /* Use the default "accelerator", tcg */
         p = "tcg";
@@ -2933,6 +2960,7 @@ int main(int argc, char **argv, char **envp)
     qemu_add_opts(&qemu_object_opts);
     qemu_add_opts(&qemu_tpmdev_opts);
     qemu_add_opts(&qemu_realtime_opts);
+    qemu_add_opts(&qemu_msg_opts);
 
     runstate_init();
 
@@ -3829,6 +3857,13 @@ int main(int argc, char **argv, char **envp)
                 }
                 configure_realtime(opts);
                 break;
+            case QEMU_OPTION_msg:
+                opts = qemu_opts_parse(qemu_find_opts("msg"), optarg, 0);
+                if (!opts) {
+                    exit(1);
+                }
+                configure_msg(opts);
+                break;
             default:
                 os_parse_cmd_args(popt->index, optarg);
             }
@@ -4080,14 +4115,10 @@ int main(int argc, char **argv, char **envp)
         qtest_init();
     }
 
-    machine_opts = qemu_opts_find(qemu_find_opts("machine"), 0);
-    if (machine_opts) {
-        kernel_filename = qemu_opt_get(machine_opts, "kernel");
-        initrd_filename = qemu_opt_get(machine_opts, "initrd");
-        kernel_cmdline = qemu_opt_get(machine_opts, "append");
-    } else {
-        kernel_filename = initrd_filename = kernel_cmdline = NULL;
-    }
+    machine_opts = qemu_get_machine_opts();
+    kernel_filename = qemu_opt_get(machine_opts, "kernel");
+    initrd_filename = qemu_opt_get(machine_opts, "initrd");
+    kernel_cmdline = qemu_opt_get(machine_opts, "append");
 
     if (!boot_order) {
         boot_order = machine->boot_order;
@@ -4130,7 +4161,7 @@ int main(int argc, char **argv, char **envp)
         exit(1);
     }
 
-    if (!linux_boot && machine_opts && qemu_opt_get(machine_opts, "dtb")) {
+    if (!linux_boot && qemu_opt_get(machine_opts, "dtb")) {
         fprintf(stderr, "-dtb only allowed with -kernel option\n");
         exit(1);
     }
@@ -4356,7 +4387,7 @@ int main(int argc, char **argv, char **envp)
     }
 #endif
 #ifdef CONFIG_SPICE
-    if (using_spice && !qxl_enabled) {
+    if (using_spice && !spice_displays) {
         qemu_spice_display_init(ds);
     }
 #endif

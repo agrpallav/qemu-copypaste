@@ -578,6 +578,12 @@
 #        expected downtime in milliseconds for the guest in last walk
 #        of the dirty bitmap. (since 1.3)
 #
+# @setup-time: #optional amount of setup time in milliseconds _before_ the
+#        iterations begin but _after_ the QMP command is issued. This is designed
+#        to provide an accounting of any activities (such as RDMA pinning) which
+#        may be expensive, but do not actually occur during the iterative
+#        migration rounds themselves. (since 1.6)
+#
 # Since: 0.14.0
 ##
 { 'type': 'MigrationInfo',
@@ -586,7 +592,8 @@
            '*xbzrle-cache': 'XBZRLECacheStats',
            '*total-time': 'int',
            '*expected-downtime': 'int',
-           '*downtime': 'int'} }
+           '*downtime': 'int',
+           '*setup-time': 'int'} }
 
 ##
 # @query-migrate
@@ -613,10 +620,19 @@
 #          Disabled by default. Experimental: may (or may not) be renamed after
 #          further testing is complete. (since 1.6)
 #
+# @zero-blocks: During storage migration encode blocks of zeroes efficiently. This
+#          essentially saves 1MB of zeroes per block on the wire. Enabling requires
+#          source and target VM to support this feature. To enable it is sufficient
+#          to enable the capability on the source VM. The feature is disabled by
+#          default. (since 1.6)
+#
+# @auto-converge: If enabled, QEMU will automatically throttle down the guest
+#          to speed up convergence of RAM migration. (since 1.6)
+#
 # Since: 1.2
 ##
 { 'enum': 'MigrationCapability',
-  'data': ['xbzrle', 'x-rdma-pin-all'] }
+  'data': ['xbzrle', 'x-rdma-pin-all', 'auto-converge', 'zero-blocks'] }
 
 ##
 # @MigrationCapabilityStatus
@@ -1634,6 +1650,10 @@
 # @format: #optional the format of the new destination, default is to
 #          probe if @mode is 'existing', else the format of the source
 #
+# @sync: what parts of the disk image should be copied to the destination
+#        (all the disk, only the sectors allocated in the topmost image, or
+#        only new I/O).
+#
 # @mode: #optional whether and how QEMU should create a new image, default is
 #        'absolute-paths'.
 #
@@ -1655,7 +1675,8 @@
 ##
 { 'type': 'DriveBackup',
   'data': { 'device': 'str', 'target': 'str', '*format': 'str',
-            '*mode': 'NewImageMode', '*speed': 'int',
+            'sync': 'MirrorSyncMode', '*mode': 'NewImageMode',
+            '*speed': 'int',
             '*on-source-error': 'BlockdevOnError',
             '*on-target-error': 'BlockdevOnError' } }
 
@@ -1709,16 +1730,7 @@
 #
 # Generates a synchronous snapshot of a block device.
 #
-# @device:  the name of the device to generate the snapshot from.
-#
-# @snapshot-file: the target of the new image. If the file exists, or if it
-#                 is a device, the snapshot will be created in the existing
-#                 file/device. If does not exist, a new file will be created.
-#
-# @format: #optional the format of the snapshot image, default is 'qcow2'.
-#
-# @mode: #optional whether and how QEMU should create a new image, default is
-#        'absolute-paths'.
+# For the arguments, see the documentation of BlockdevSnapshot.
 #
 # Returns: nothing on success
 #          If @device is not a valid block device, DeviceNotFound
@@ -1726,8 +1738,7 @@
 # Since 0.14.0
 ##
 { 'command': 'blockdev-snapshot-sync',
-  'data': { 'device': 'str', 'snapshot-file': 'str', '*format': 'str',
-            '*mode': 'NewImageMode'} }
+  'data': 'BlockdevSnapshot' }
 
 ##
 # @human-monitor-command:
@@ -1801,42 +1812,14 @@
 # The operation can be stopped before it has completed using the
 # block-job-cancel command.
 #
-# @device: the name of the device which should be copied.
-#
-# @target: the target of the new image. If the file exists, or if it
-#          is a device, the existing file/device will be used as the new
-#          destination.  If it does not exist, a new file will be created.
-#
-# @format: #optional the format of the new destination, default is to
-#          probe if @mode is 'existing', else the format of the source
-#
-# @mode: #optional whether and how QEMU should create a new image, default is
-#        'absolute-paths'.
-#
-# @speed: #optional the maximum speed, in bytes per second
-#
-# @on-source-error: #optional the action to take on an error on the source,
-#                   default 'report'.  'stop' and 'enospc' can only be used
-#                   if the block device supports io-status (see BlockInfo).
-#
-# @on-target-error: #optional the action to take on an error on the target,
-#                   default 'report' (no limitations, since this applies to
-#                   a different block device than @device).
-#
-# Note that @on-source-error and @on-target-error only affect background I/O.
-# If an error occurs during a guest write request, the device's rerror/werror
-# actions will be used.
+# For the arguments, see the documentation of DriveBackup.
 #
 # Returns: nothing on success
 #          If @device is not a valid block device, DeviceNotFound
 #
 # Since 1.6
 ##
-{ 'command': 'drive-backup',
-  'data': { 'device': 'str', 'target': 'str', '*format': 'str',
-            '*mode': 'NewImageMode', '*speed': 'int',
-            '*on-source-error': 'BlockdevOnError',
-            '*on-target-error': 'BlockdevOnError' } }
+{ 'command': 'drive-backup', 'data': 'DriveBackup' }
 
 ##
 # @drive-mirror
@@ -3379,15 +3362,15 @@
                                  '*rows'   : 'int' } }
 
 ##
-# @ChardevMemory:
+# @ChardevRingbuf:
 #
-# Configuration info for memory chardevs
+# Configuration info for ring buffer chardevs.
 #
-# @size: #optional Ringbuffer size, must be power of two, default is 65536
+# @size: #optional ring buffer size, must be power of two, default is 65536
 #
 # Since: 1.5
 ##
-{ 'type': 'ChardevMemory', 'data': { '*size'  : 'int' } }
+{ 'type': 'ChardevRingbuf', 'data': { '*size'  : 'int' } }
 
 ##
 # @ChardevBackend:
@@ -3414,7 +3397,9 @@
                                        'spicevmc' : 'ChardevSpiceChannel',
                                        'spiceport' : 'ChardevSpicePort',
                                        'vc'     : 'ChardevVC',
-                                       'memory' : 'ChardevMemory' } }
+                                       'ringbuf': 'ChardevRingbuf',
+                                       # next one is just for compatibility
+                                       'memory' : 'ChardevRingbuf' } }
 
 ##
 # @ChardevReturn:
@@ -3712,3 +3697,79 @@
             '*cpuid-input-ecx': 'int',
             'cpuid-register': 'X86CPURegister32',
             'features': 'int' } }
+
+##
+# @RxState:
+#
+# Packets receiving state
+#
+# @normal: filter assigned packets according to the mac-table
+#
+# @none: don't receive any assigned packet
+#
+# @all: receive all assigned packets
+#
+# Since: 1.6
+##
+{ 'enum': 'RxState', 'data': [ 'normal', 'none', 'all' ] }
+
+##
+# @RxFilterInfo:
+#
+# Rx-filter information for a NIC.
+#
+# @name: net client name
+#
+# @promiscuous: whether promiscuous mode is enabled
+#
+# @multicast: multicast receive state
+#
+# @unicast: unicast receive state
+#
+# @broadcast-allowed: whether to receive broadcast
+#
+# @multicast-overflow: multicast table is overflowed or not
+#
+# @unicast-overflow: unicast table is overflowed or not
+#
+# @main-mac: the main macaddr string
+#
+# @vlan-table: a list of active vlan id
+#
+# @unicast-table: a list of unicast macaddr string
+#
+# @multicast-table: a list of multicast macaddr string
+#
+# Since 1.6
+##
+
+{ 'type': 'RxFilterInfo',
+  'data': {
+    'name':               'str',
+    'promiscuous':        'bool',
+    'multicast':          'RxState',
+    'unicast':            'RxState',
+    'broadcast-allowed':  'bool',
+    'multicast-overflow': 'bool',
+    'unicast-overflow':   'bool',
+    'main-mac':           'str',
+    'vlan-table':         ['int'],
+    'unicast-table':      ['str'],
+    'multicast-table':    ['str'] }}
+
+##
+# @query-rx-filter:
+#
+# Return rx-filter information for all NICs (or for the given NIC).
+#
+# @name: #optional net client name
+#
+# Returns: list of @RxFilterInfo for all NICs (or for the given NIC).
+#          Returns an error if the given @name doesn't exist, or given
+#          NIC doesn't support rx-filter querying, or given net client
+#          isn't a NIC.
+#
+# Since: 1.6
+##
+{ 'command': 'query-rx-filter', 'data': { '*name': 'str' },
+  'returns': ['RxFilterInfo'] }

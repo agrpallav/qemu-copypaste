@@ -47,6 +47,7 @@
 #define MAX_SATA_PORTS     6
 
 static bool has_pvpanic = true;
+static bool has_pci_info = true;
 
 /* PC hardware initialisation */
 static void pc_q35_init(QEMUMachineInitArgs *args)
@@ -59,6 +60,7 @@ static void pc_q35_init(QEMUMachineInitArgs *args)
     const char *boot_device = args->boot_device;
     ram_addr_t below_4g_mem_size, above_4g_mem_size;
     Q35PCIHost *q35_host;
+    PCIHostState *phb;
     PCIBus *host_bus;
     PCIDevice *lpc;
     BusState *idebus[MAX_SATA_PORTS];
@@ -77,6 +79,7 @@ static void pc_q35_init(QEMUMachineInitArgs *args)
     ICH9LPCState *ich9_lpc;
     PCIDevice *ahci;
     DeviceState *icc_bridge;
+    PcGuestInfo *guest_info;
 
     icc_bridge = qdev_create(NULL, TYPE_ICC_BRIDGE);
     object_property_add_child(qdev_get_machine(), "icc-bridge",
@@ -98,18 +101,21 @@ static void pc_q35_init(QEMUMachineInitArgs *args)
     /* pci enabled */
     if (pci_enabled) {
         pci_memory = g_new(MemoryRegion, 1);
-        memory_region_init(pci_memory, "pci", INT64_MAX);
+        memory_region_init(pci_memory, NULL, "pci", INT64_MAX);
         rom_memory = pci_memory;
     } else {
         pci_memory = NULL;
         rom_memory = get_system_memory();
     }
 
+    guest_info = pc_guest_info_init(below_4g_mem_size, above_4g_mem_size);
+    guest_info->has_pci_info = has_pci_info;
+
     /* allocate ram and load rom/bios */
     if (!xen_enabled()) {
         pc_memory_init(get_system_memory(), kernel_filename, kernel_cmdline,
                        initrd_filename, below_4g_mem_size, above_4g_mem_size,
-                       rom_memory, &ram_memory);
+                       rom_memory, &ram_memory, guest_info);
     }
 
     /* irq lines */
@@ -125,15 +131,18 @@ static void pc_q35_init(QEMUMachineInitArgs *args)
     /* create pci host bus */
     q35_host = Q35_HOST_DEVICE(qdev_create(NULL, TYPE_Q35_HOST_DEVICE));
 
+    object_property_add_child(qdev_get_machine(), "q35", OBJECT(q35_host), NULL);
     q35_host->mch.ram_memory = ram_memory;
     q35_host->mch.pci_address_space = pci_memory;
     q35_host->mch.system_memory = get_system_memory();
     q35_host->mch.address_space_io = get_system_io();
     q35_host->mch.below_4g_mem_size = below_4g_mem_size;
     q35_host->mch.above_4g_mem_size = above_4g_mem_size;
+    q35_host->mch.guest_info = guest_info;
     /* pci */
     qdev_init_nofail(DEVICE(q35_host));
-    host_bus = q35_host->host.pci.bus;
+    phb = PCI_HOST_BRIDGE(q35_host);
+    host_bus = phb->bus;
     /* create ISA bus */
     lpc = pci_create_simple_multifunction(host_bus, PCI_DEVFN(ICH9_LPC_DEV,
                                           ICH9_LPC_FUNC), true,
@@ -208,11 +217,17 @@ static void pc_q35_init(QEMUMachineInitArgs *args)
     }
 }
 
+static void pc_q35_init_1_5(QEMUMachineInitArgs *args)
+{
+    has_pci_info = false;
+    pc_q35_init(args);
+}
+
 static void pc_q35_init_1_4(QEMUMachineInitArgs *args)
 {
     has_pvpanic = false;
     x86_cpu_compat_set_features("n270", FEAT_1_ECX, 0, CPUID_EXT_MOVBE);
-    pc_q35_init(args);
+    pc_q35_init_1_5(args);
 }
 
 static QEMUMachine pc_q35_machine_v1_6 = {
@@ -228,7 +243,7 @@ static QEMUMachine pc_q35_machine_v1_6 = {
 static QEMUMachine pc_q35_machine_v1_5 = {
     .name = "pc-q35-1.5",
     .desc = "Standard PC (Q35 + ICH9, 2009)",
-    .init = pc_q35_init,
+    .init = pc_q35_init_1_5,
     .hot_add_cpu = pc_hot_add_cpu,
     .max_cpus = 255,
     .compat_props = (GlobalProperty[]) {

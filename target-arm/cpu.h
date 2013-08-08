@@ -249,11 +249,6 @@ int cpu_arm_handle_mmu_fault (CPUARMState *env, target_ulong address, int rw,
                               int mmu_idx);
 #define cpu_handle_mmu_fault cpu_arm_handle_mmu_fault
 
-static inline void cpu_set_tls(CPUARMState *env, target_ulong newtls)
-{
-  env->cp15.c13_tls2 = newtls;
-}
-
 #define CPSR_M (0x1f)
 #define CPSR_T (1 << 5)
 #define CPSR_F (1 << 6)
@@ -392,6 +387,7 @@ enum arm_features {
     ARM_FEATURE_MPIDR, /* has cp15 MPIDR */
     ARM_FEATURE_PXN, /* has Privileged Execute Never bit */
     ARM_FEATURE_LPAE, /* has Large Physical Address Extension */
+    ARM_FEATURE_V8,
 };
 
 static inline int arm_feature(CPUARMState *env, int feature)
@@ -734,15 +730,6 @@ static inline int cpu_mmu_index (CPUARMState *env)
     return (env->uncached_cpsr & CPSR_M) == ARM_CPU_MODE_USR ? 1 : 0;
 }
 
-#if defined(CONFIG_USER_ONLY)
-static inline void cpu_clone_regs(CPUARMState *env, target_ulong newsp)
-{
-    if (newsp)
-        env->regs[13] = newsp;
-    env->regs[0] = 0;
-}
-#endif
-
 #include "exec/cpu-all.h"
 
 /* Bit usage in the TB flags field: */
@@ -809,11 +796,6 @@ static inline bool cpu_has_work(CPUState *cpu)
 }
 
 #include "exec/exec-all.h"
-
-static inline void cpu_pc_from_tb(CPUARMState *env, TranslationBlock *tb)
-{
-    env->regs[15] = tb->pc;
-}
 
 /* Load an instruction and return it in the standard little-endian order */
 static inline uint32_t arm_ldl_code(CPUARMState *env, uint32_t addr,
