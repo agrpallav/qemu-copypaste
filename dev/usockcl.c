@@ -35,16 +35,18 @@ if (t != G_IO_STATUS_NORMAL) printf("WRONG\n");
 gsize wrote;
 //const gchar buff[10];
 sprintf(buf,"my name is pallav");
-printf("printing: %s",buf);
+printf("printing: %s\n",buf);
 GIOStatus st=g_io_channel_write_chars(gc, "pallav is my name\0", -1, &wrote, NULL);
 g_io_channel_flush(gc,NULL);
 printf("wrote: %d status: %d\n",wrote,st);
 
 sleep(3);
+printf("printing: name is anshu\n");
 sprintf(buf,"name is anshu");
 st=g_io_channel_write_chars(gc, "anshu is my", -1, &wrote, NULL);
 g_io_channel_flush(gc,NULL);
-//sleep(2);
+printf("wrote: %d, status%d\n",wrote,st);
+sleep(2);
 
 //write(fd, "my name is pallav",rc);
 /*
