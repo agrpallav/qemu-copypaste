@@ -107,8 +107,8 @@ static gboolean ga_channel_client_event(GIOChannel *channel,
         if (!client_cont) {
             ga_channel_client_close(chc);
             ga_channel_client_free(chc);
+            return false;
         }
-        return false;
     }
     return true;
 }
@@ -155,6 +155,7 @@ static int ga_channel_client_add(GAChannelListener *chl, int fd)
 */
     g_io_add_watch(client_channel, G_IO_IN | G_IO_HUP,
                    ga_channel_client_event, chc);
+    g_critical("new client added\n");
     return 0;
 }
 

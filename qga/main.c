@@ -592,7 +592,9 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
 {
     GAChannelClient *chc = container_of(parser, GAChannelClient, parser);
     GAChannelListener *chl = chc->listener;
+    GAState *state = chl->state;
     GAChannelClient *chc_out;
+
     QObject *obj;
     QDict *qdict;
     Error *err = NULL;
@@ -619,22 +621,27 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
 
     g_assert(qdict);
 
-    /* handle host->guest commands */
+    /* handle host->guest / guest-session->host commands */
     if (qdict_haskey(qdict, "execute")) {
         if (chl->type == GA_CHANNEL_SESSION_CLIENT) {
+            chc_out = state->channel_host->client.host;
             qdict_put_obj(qdict, "sessionid", QOBJECT(qint_from_int(chc->id)));
-            ret = send_response(chc, QOBJECT(qdict));
+            ret = send_response(chc_out, QOBJECT(qdict));
             if (ret) {
                 g_warning("error sending error response: %s", strerror(ret));
             }
         } else {
             process_command(chc, qdict);
         }
-    } else if (qdict_haskey(qdict,"return") && qdict_haskey(qdict,"sessionid")) {
+
+    } /* handle RPC response from host->guest-session */ 
+    else if (qdict_haskey(qdict,"return") && qdict_haskey(qdict,"sessionid")) {
+        g_assert(chl->type != GA_CHANNEL_SESSION_CLIENT);
+
         id = qdict_get_int(qdict, "sessionid");
         qdict_del(qdict, "sessionid");
 
-        chc_out = gachannel_from_id(chl, id);
+        chc_out = gachannel_from_id(state->channel_session_client, id);
         if (chc_out == NULL) {
             g_warning("invalid session id, ignoring message");
         }
@@ -658,12 +665,13 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
         }
     }
 
-QDECREF(qdict);
+    QDECREF(qdict);
 }
 
 /* false return signals GAChannel to close the current client connection */
 static gboolean channel_event_cb(GIOCondition condition, GAChannelClient *chc)
 {
+    //g_critical("event_cb called");
     GAChannelListener *chl = chc->listener;
     gchar buf[QGA_READ_COUNT_DEFAULT+1];
     gsize count;
@@ -674,23 +682,24 @@ static gboolean channel_event_cb(GIOCondition condition, GAChannelClient *chc)
         g_error_free(err);
         return false;
     }
+
     switch (status) {
+
     case G_IO_STATUS_ERROR:
         g_warning("error reading channel");
+        printf("ERROR\n");
         return false;
+
     case G_IO_STATUS_NORMAL:
-        if (chl->type == GA_CHANNEL_SESSION_CLIENT) {
-            buf[count]='\0';
-            printf ("count: %lu, message: %s\n",count,buf);
-        } else {
-            buf[count] = 0;
-            g_debug("read data, count: %d, data: %s", (int)count, buf);
-            json_message_parser_feed(&chc->parser, (char *)buf, (int)count);
-        }
+        buf[count] = 0;
+        g_debug("read data, count: %d, data: %s", (int)count, buf);
+        json_message_parser_feed(&chc->parser, (char *)buf, (int)count);
         break;
+
     case G_IO_STATUS_EOF:
         g_debug("received EOF");
         if (chl->method != GA_CHANNEL_VIRTIO_SERIAL) {
+            printf ("EOF-here\n");
             return false;
         }
         /* fall through */
@@ -702,8 +711,10 @@ static gboolean channel_event_cb(GIOCondition condition, GAChannelClient *chc)
             usleep(100*1000);
         }
         return true;
+
     default:
         g_warning("unknown channel read status, closing");
+        printf("ERROR2\n");
         return false;
     }
     return true;
@@ -752,6 +763,7 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path,
         g_critical("failed to create guest agent channel: type %d",channel_type);
         return false;
     }
+    chl->state = s;
 
     switch(channel_type) {
     case GA_CHANNEL_SESSION_CLIENT:

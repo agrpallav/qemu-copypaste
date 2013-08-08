@@ -40,7 +40,7 @@ struct GAChannelListener {
     GAChannelType type;
     GAChannelCallback event_cb;
     JSONMessageParserCallback json_cb;
-    //gpointer session;
+    gpointer state;
     union {
         GPtrArray *sessions; //only used when type == SESSION_CLIENT
         GAChannelClient *host; //used otherwise
