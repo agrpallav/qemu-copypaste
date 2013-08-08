@@ -68,13 +68,10 @@ typedef struct GAPersistentState {
 } GAPersistentState;
 
 struct GAState {
-    //JSONMessageParser parser;
     GMainLoop *main_loop;
     GAChannelListener *channel_host;
     GAChannelListener *channel_session_client;
     GAChannelListener *channel_session_host;
-//    GPtrArray *channel_session_clients;
-//    bool virtio; /* fastpath to check for virtio to deal with poll() quirks */
     GACommandState *command_state;
     GLogLevelFlags log_level;
     FILE *log_file;
@@ -82,7 +79,7 @@ struct GAState {
 #ifdef _WIN32
     GAService service;
 #endif
-//    bool delimit_response;
+
     bool frozen;
     GList *blacklist;
     const char *state_filepath_isfrozen;
@@ -671,7 +668,6 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
 /* false return signals GAChannel to close the current client connection */
 static gboolean channel_event_cb(GIOCondition condition, GAChannelClient *chc)
 {
-    //g_critical("event_cb called");
     GAChannelListener *chl = chc->listener;
     gchar buf[QGA_READ_COUNT_DEFAULT+1];
     gsize count;
@@ -687,7 +683,6 @@ static gboolean channel_event_cb(GIOCondition condition, GAChannelClient *chc)
 
     case G_IO_STATUS_ERROR:
         g_warning("error reading channel");
-        printf("ERROR\n");
         return false;
 
     case G_IO_STATUS_NORMAL:
@@ -699,7 +694,6 @@ static gboolean channel_event_cb(GIOCondition condition, GAChannelClient *chc)
     case G_IO_STATUS_EOF:
         g_debug("received EOF");
         if (chl->method != GA_CHANNEL_VIRTIO_SERIAL) {
-            printf ("EOF-here\n");
             return false;
         }
         /* fall through */
@@ -714,7 +708,6 @@ static gboolean channel_event_cb(GIOCondition condition, GAChannelClient *chc)
 
     default:
         g_warning("unknown channel read status, closing");
-        printf("ERROR2\n");
         return false;
     }
     return true;
@@ -780,7 +773,6 @@ static gboolean channel_init(GAState *s, const gchar *method, const gchar *path,
         return false;
     }
 
-    //json_message_parser_init(&channel->parser, process_event);
     return true;
 }
 
@@ -1237,8 +1229,6 @@ int main(int argc, char **argv)
     s->command_state = ga_command_state_new();
     ga_command_state_init(s, s->command_state);
     ga_command_state_init_all(s->command_state);
-    //json_message_parser_init(&s->parser, process_event);
-    //s->channel_session_clients = g_ptr_array_new();
     ga_state = s;
 #ifndef _WIN32
     if (!register_signal_handlers()) {

@@ -88,7 +88,6 @@ static void ga_channel_client_close(GAChannelClient *chc)
     } else {
         chl->client.host = NULL;
     }
-    //g_critical("id: %d, client closed",c->id);
     if (chl->method == GA_CHANNEL_UNIX_LISTEN && chl->channel && chl->type != GA_CHANNEL_SESSION_CLIENT) {
         ga_channel_listen_add(chl, 0, false);
     }
@@ -143,19 +142,10 @@ static int ga_channel_client_add(GAChannelListener *chl, int fd)
         g_assert(chl->client.host == NULL);
         chl->client.host = chc;
     }
-//    g_assert(c_new->id<=1);
 
-// id==1 is reserved for original listening GAChannel. It can accept a client but it is treated especially as it cannot be freed until the listener is closed.
-/*    if (c->type == GA_CHANNEL_SESSION_CLIENT && c_new->id != 1) {
-        g_critical("assigning id: %d",counter);
-        c_new->id = counter;
-        counter++;
-    }
-    c_new->client_channel = client_channel;
-*/
     g_io_add_watch(client_channel, G_IO_IN | G_IO_HUP,
                    ga_channel_client_event, chc);
-    g_critical("new client added\n");
+
     return 0;
 }
 
@@ -295,7 +285,7 @@ GAChannelListener *ga_channel_new(GAChannelMethod method, const gchar *path,
     if (channel_type == GA_CHANNEL_SESSION_CLIENT) {
         chl->client.sessions = g_ptr_array_new();
     }
-    //c->client_channel = NULL;
+
     if (!ga_channel_open(chl, path, method)) {
         g_critical("error opening channel");
         ga_channel_listener_free(chl);
@@ -305,41 +295,18 @@ GAChannelListener *ga_channel_new(GAChannelMethod method, const gchar *path,
     return chl;
 }
 
-/*
-static GAChannel *ga_channel_copy(GAChannel *c)
-{
-    g_critical("Copying channel");
-    GAChannel *n = g_malloc0(sizeof(GAChannel));
-    n->listen_channel = c->listen_channel;
-    n->client_channel = NULL;
-    n->method = c->method;
-    n->type = c->type;
-    n->event_cb = c->event_cb;
-    n->session = c->session;
-    n->channel_session_clients = c->channel_session_clients;
-    json_message_parser_init(&n->parser, c->parser.emit);
-    return n;
-}
-*/
-
 void ga_channel_client_free(GAChannelClient *chc)
 {
-    /* if (c->method == GA_CHANNEL_UNIX_LISTEN
-        && c->listen_channel) {
-        ga_channel_listen_close(c);
-        }*/
     if (chc->channel) {
         ga_channel_client_close(chc);
     }
-    /* if (c->type == GA_CHANNEL_SESSION_CLIENT) {
-        g_ptr_array_remove(c->channel_session_clients, c);
-        }*/
     g_free(chc);
 }
 
 
 void ga_channel_listener_free(GAChannelListener *chl)
 {
+    g_assert(chl);
     if (chl->method == GA_CHANNEL_UNIX_LISTEN && chl->channel) {
         ga_channel_listen_close(chl);
     }
