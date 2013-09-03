@@ -45,7 +45,7 @@
 
 #ifndef _WIN32
 #define QGA_HOST_PATH_DEFAULT "/dev/virtio-ports/org.qemu.guest_agent.0"
-#define QGA_SESSION_HOST_PATH_DEFAULT "/tmp/host_qga.sock"
+#define QGA_SESSION_HOST_PATH_DEFAULT "/dev/virtio-ports/org.qemu.session_host.0"
 #define QGA_SESSION_CLIENT_PATH_DEFAULT "/tmp/sproc.sock"
 #define QGA_STATE_RELATIVE_DIR  "run"
 #else
@@ -187,10 +187,21 @@ static void usage(const char *cmd)
 "Usage: %s [-m <method> -p <path>] [<options>]\n"
 "QEMU Guest Agent %s\n"
 "\n"
-"  -m, --method      transport method: one of unix-listen, virtio-serial, or\n"
+"  -m, --method      transport method(for host channel): one of unix-listen, virtio-serial, or\n"
 "                    isa-serial (virtio-serial is the default)\n"
+
+"  --shostmethod   transport method(for session_host channel): one of unix-listen, virtio-serial, or\n"
+"                    isa-serial (virtio-serial is the default)\n"
+"  --sclientmethod    transport method(for session_client channels): one of unix-listen, virtio-serial, or\n"
+"                    isa-serial (unix-listen is the default)\n"
+
 "  -p, --path        device/socket path (the default for virtio-serial is:\n"
 "                    %s)\n"
+"  --sessionpath     device/socket path for session-host (the default for virtio-serial is:\n"
+"                    %s)\n"
+"  --clientpath      device/socket path for session-client (the default for unix-listen is:\n"
+"                    %s)\n"
+
 "  -l, --logfile     set logfile path, logs to stderr by default\n"
 "  -f, --pidfile     specify pidfile (default is %s)\n"
 #ifdef CONFIG_FSFREEZE
@@ -216,7 +227,7 @@ static void usage(const char *cmd)
 "  -h, --help        display this help and exit\n"
 "\n"
 "Report bugs to <mdroth@linux.vnet.ibm.com>\n"
-    , cmd, QEMU_VERSION, QGA_HOST_PATH_DEFAULT, dfl_pathnames.pidfile,
+, cmd, QEMU_VERSION, QGA_HOST_PATH_DEFAULT, QGA_SESSION_HOST_PATH_DEFAULT, QGA_SESSION_CLIENT_PATH_DEFAULT, dfl_pathnames.pidfile,
 #ifdef CONFIG_FSFREEZE
     QGA_FSFREEZE_HOOK_DEFAULT,
 #endif
@@ -998,7 +1009,7 @@ int64_t ga_get_fd_handle(GAState *s, Error **errp)
 int main(int argc, char **argv)
 {
     const char *sopt = "hVvdm:p:l:f:F::b:s:t:";
-    const char *method = NULL, *path = NULL;
+    const char *method = NULL, *path = NULL, *sessionmethod = NULL, *sessionpath = NULL;
     const char *log_filepath = NULL;
     const char *pid_filepath;
 #ifdef CONFIG_FSFREEZE
@@ -1018,7 +1029,11 @@ int main(int argc, char **argv)
 #endif
         { "verbose", 0, NULL, 'v' },
         { "method", 1, NULL, 'm' },
+        { "sessionmethod", 1, NULL, 'M' },
+        { "clientmethod", 1, NULL, 'C' },
         { "path", 1, NULL, 'p' },
+        { "sessionpath", 1, NULL, 'P' },
+        { "clientpath", 1, NULL, 'c' },
         { "daemonize", 0, NULL, 'd' },
         { "blacklist", 1, NULL, 'b' },
 #ifdef _WIN32
@@ -1043,8 +1058,20 @@ int main(int argc, char **argv)
         case 'm':
             method = optarg;
             break;
+        case 'M':
+            sessionmethod = optarg;
+            break;
+        case 'C':
+            clientmethod = optarg;
+            break;
         case 'p':
             path = optarg;
+            break;
+        case 'P':
+            sessionpath=optarg;
+            break;
+        case 'c':
+            clientpath=optarg;
             break;
         case 'l':
             log_filepath = optarg;
@@ -1244,13 +1271,13 @@ int main(int argc, char **argv)
         goto out_bad;
     }
 
-    if (!channel_init(ga_state, "unix-listen", NULL, GA_CHANNEL_SESSION_CLIENT)) {
-        g_critical("failed to init the temp socket");
+    if (!channel_init(ga_state, clientmethod, clientpath, GA_CHANNEL_SESSION_CLIENT)) {
+        g_critical("failed to init session client channel");
         goto out_bad;
     }
 
-    if (!channel_init(ga_state, "unix-listen", NULL, GA_CHANNEL_SESSION_HOST)) {
-        g_critical("failed to init the temp socket");
+    if (!channel_init(ga_state, sessionmethod, sessionpath, GA_CHANNEL_SESSION_HOST)) {
+        g_critical("failed to init the session host channel");
         goto out_bad;
     }
 
