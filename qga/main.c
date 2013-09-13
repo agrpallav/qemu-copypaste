@@ -187,20 +187,26 @@ static void usage(const char *cmd)
 "Usage: %s [-m <method> -p <path>] [<options>]\n"
 "QEMU Guest Agent %s\n"
 "\n"
-"  -m, --method      transport method(for host channel): one of unix-listen, virtio-serial, or\n"
+"  -m, --host-server-method      transport method(for host channel): one of unix-listen, virtio-serial, or\n"
 "                    isa-serial (virtio-serial is the default)\n"
-
-"  --shostmethod     transport method(for session_host channel): one of unix-listen, virtio-serial, or\n"
+"  --session-server-method"
+"                    transport method(for session_host channel): one of unix-listen, virtio-serial, or\n"
 "                    isa-serial (virtio-serial is the default)\n"
-"  --sclientmethod   transport method(for session_client channels): one of unix-listen, virtio-serial, or\n"
+"  --session-client-method"
+"                    transport method(for session_client channels): one of unix-listen, virtio-serial, or\n"
 "                    isa-serial (unix-listen is the default)\n"
 
-"  -p, --path        device/socket path (the default for virtio-serial is:\n"
+"  -p, --host-server-path"
+"                    device/socket path (the default for virtio-serial is:\n"
 "                    %s)\n"
-"  --sessionpath     device/socket path for session-host (the default for virtio-serial is:\n"
+"  --session-server-path"
+"                    device/socket path for session-host (the default for virtio-serial is:\n"
 "                    %s)\n"
-"  --clientpath      device/socket path for session-client (the default for unix-listen is:\n"
+"  --session-client-path"
+"                    device/socket path for session-client (the default for unix-listen is:\n"
 "                    %s)\n"
+"  --enable-session-server"
+"                    enables the session servers and clients (session-server disabled by default)"
 
 "  -l, --logfile     set logfile path, logs to stderr by default\n"
 "  -f, --pidfile     specify pidfile (default is %s)\n"
@@ -544,7 +550,7 @@ static GAChannelClient *gachannel_from_id(GAChannelListener *chl, int sessionid)
     return NULL;
 }
 
-static int send_response(GAChannelClient *chc, QObject *payload)
+static int send_message(GAChannelClient *chc, QObject *payload)
 {
     const char *buf;
     QString *payload_qstr, *response_qstr;
@@ -587,7 +593,7 @@ static void process_command(GAChannelClient *chc, QDict *req)
     g_debug("processing command");
     rsp = qmp_dispatch(QOBJECT(req));
     if (rsp) {
-        ret = send_response(chc, rsp);
+        ret = send_message(chc, rsp);
         if (ret) {
             g_warning("error sending response: %s", strerror(ret));
         }
@@ -634,7 +640,7 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
         if (chl->type == GA_CHANNEL_SESSION_CLIENT) {
             chc_out = state->channel_host->client.host;
             qdict_put_obj(qdict, "sessionid", QOBJECT(qint_from_int(chc->id)));
-            ret = send_response(chc_out, QOBJECT(qdict));
+            ret = send_message(chc_out, QOBJECT(qdict));
             if (ret) {
                 g_warning("error sending error response: %s", strerror(ret));
             }
@@ -642,7 +648,7 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
             process_command(chc, qdict);
         }
 
-    } /* handle RPC response from host->guest-session */ 
+    } /* handle RPC response from host->guest-session */
     else if (qdict_haskey(qdict,"return") && qdict_haskey(qdict,"sessionid")) {
         g_assert(chl->type != GA_CHANNEL_SESSION_CLIENT);
 
@@ -654,7 +660,7 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
             g_warning("invalid session id, ignoring message");
         }
 
-        ret = send_response(chc_out, QOBJECT(qdict));
+        ret = send_message(chc_out, QOBJECT(qdict));
         if (ret) {
             g_warning("error sending error response: %s", strerror(ret));
         }
@@ -667,7 +673,7 @@ static void process_event(JSONMessageParser *parser, QList *tokens)
             qdict_put_obj(qdict, "error", qmp_build_error_object(err));
             error_free(err);
         }
-        ret = send_response(chc, QOBJECT(qdict));
+        ret = send_message(chc, QOBJECT(qdict));
         if (ret) {
             g_warning("error sending error response: %s", strerror(ret));
         }
@@ -1017,6 +1023,7 @@ int main(int argc, char **argv)
     const char *method = NULL, *path = NULL;
     const char *session_method = NULL, *session_path = NULL;
     const char *client_method = NULL, *client_path = NULL;
+    gboolean enable_session_server = FALSE;
     const char *log_filepath = NULL;
     const char *pid_filepath;
 #ifdef CONFIG_FSFREEZE
@@ -1035,12 +1042,13 @@ int main(int argc, char **argv)
         { "fsfreeze-hook", 2, NULL, 'F' },
 #endif
         { "verbose", 0, NULL, 'v' },
-        { "method", 1, NULL, 'm' },
-        { "sessionmethod", 1, NULL, 'M' },
-        { "clientmethod", 1, NULL, 'C' },
-        { "path", 1, NULL, 'p' },
-        { "sessionpath", 1, NULL, 'P' },
-        { "clientpath", 1, NULL, 'c' },
+        { "host-server-method", 1, NULL, 'm' },
+        { "session-server-method", 1, NULL, 'M' },
+        { "session-client-method", 1, NULL, 'C' },
+        { "host-server-path", 1, NULL, 'p' },
+        { "session-server-path", 1, NULL, 'P' },
+        { "session-client-path", 1, NULL, 'c' },
+        { "enable-session-server", 1, NULL, 'e' },
         { "daemonize", 0, NULL, 'd' },
         { "blacklist", 1, NULL, 'b' },
 #ifdef _WIN32
@@ -1080,6 +1088,8 @@ int main(int argc, char **argv)
         case 'c':
             client_path=optarg;
             break;
+        case 'e':
+            enable_session_server = TRUE;
         case 'l':
             log_filepath = optarg;
             break;
@@ -1278,16 +1288,17 @@ int main(int argc, char **argv)
         goto out_bad;
     }
 
-    if (!channel_init(ga_state, client_method, client_path, GA_CHANNEL_SESSION_CLIENT)) {
-        g_critical("failed to initialize session client channel");
-        goto out_bad;
-    }
+    if (enable_session_server) {
+        if (!channel_init(ga_state, client_method, client_path, GA_CHANNEL_SESSION_CLIENT)) {
+            g_critical("failed to initialize session client channel");
+            goto out_bad;
+        }
 
-    if (!channel_init(ga_state, session_method, session_path, GA_CHANNEL_SESSION_HOST)) {
-        g_critical("failed to initialize the session host channel");
-        goto out_bad;
+        if (!channel_init(ga_state, session_method, session_path, GA_CHANNEL_SESSION_HOST)) {
+            g_critical("failed to initialize the session host channel");
+            goto out_bad;
+        }
     }
-
 #ifndef _WIN32
     g_main_loop_run(ga_state->main_loop);
     g_critical("main loop ended");
